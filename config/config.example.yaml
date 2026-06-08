@@ -1,0 +1,41 @@
+# PullBox Configuration
+# Copy this file to config.yaml and fill in your values.
+# Environment variables prefixed with PULLBOX_ override any setting here.
+# Example: PULLBOX_DEBUG=true overrides debug below.
+
+# ── Required ─────────────────────────────────────────────────────────────────
+
+# ComicVine API key (get yours at https://comicvine.gamespot.com/api/documentation/)
+comicvine_api_key: ""
+
+# Secret key for signing internal tokens. Change this to a random string.
+secret_key: "changeme"
+
+# ── Paths ─────────────────────────────────────────────────────────────────────
+
+# Root folder where downloaded comics are stored.
+library_path: "/comics"
+
+# Directory where the database and this config file live.
+config_path: "/config"
+
+# SQLAlchemy async database URL.
+# Default uses SQLite inside config_path. Switch to PostgreSQL with:
+#   postgresql+asyncpg://user:password@host/dbname
+database_url: "sqlite+aiosqlite:////config/pullbox.db"
+
+# ── Scheduler ─────────────────────────────────────────────────────────────────
+
+# Time of day (HH:MM, 24-hour) to run the daily queue retry sweep.
+retry_time: "06:00"
+
+# Maximum number of download attempts per issue before giving up.
+max_retries: 20
+
+# How many weeks ahead to include in the pull list (today + N weeks).
+pull_list_lookahead_weeks: 2
+
+# ── Debug ─────────────────────────────────────────────────────────────────────
+
+# Enable debug mode (verbose logging, FastAPI debug pages).
+debug: false

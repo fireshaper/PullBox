@@ -1,0 +1,39 @@
+# Runtime config (contains secrets and DB)
+config/config.yaml
+config/*.db
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+.env
+
+# Node
+node_modules/
+dist/
+frontend/dist/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test coverage
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Ruff cache
+.ruff_cache/

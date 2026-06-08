@@ -1,0 +1,13 @@
+services:
+  pullbox:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8585:8585"
+    volumes:
+      - ./config:/config
+      - ${COMICS_PATH:-/comics}:/comics
+    environment:
+      - TZ=${TZ:-UTC}
+      - PULLBOX_SECRET_KEY=${PULLBOX_SECRET_KEY}
+      - PULLBOX_COMICVINE_API_KEY=${PULLBOX_COMICVINE_API_KEY}
