@@ -18,7 +18,7 @@ A self-hosted comic book acquisition manager. Subscribe to series, see what's re
 ### 1. Clone and configure
 
 ```bash
-git clone https://github.com/youruser/pullbox.git
+git clone https://github.com/fireshaper/pullbox.git
 cd pullbox
 cp .env.example .env
 ```
