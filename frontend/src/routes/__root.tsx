@@ -1,11 +1,12 @@
 import { createRootRoute, Link, Outlet } from '@tanstack/react-router'
-import { BookOpen, Calendar, Download, Settings } from 'lucide-react'
+import { BookOpen, Calendar, Download, LayoutDashboard, Settings } from 'lucide-react'
 
 export const Route = createRootRoute({
   component: AppLayout,
 })
 
 const NAV_ITEMS = [
+  { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { to: '/pull-list', label: 'Pull List', icon: Calendar },
   { to: '/series', label: 'Series', icon: BookOpen },
   { to: '/queue', label: 'Queue', icon: Download },

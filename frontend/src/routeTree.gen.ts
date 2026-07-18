@@ -15,6 +15,9 @@ import { Route as SettingsIndexRouteImport } from './routes/settings/index'
 import { Route as SeriesIndexRouteImport } from './routes/series/index'
 import { Route as QueueIndexRouteImport } from './routes/queue/index'
 import { Route as PullListIndexRouteImport } from './routes/pull-list/index'
+import { Route as DashboardIndexRouteImport } from './routes/dashboard/index'
+import { Route as SettingsPostProcessingIndexRouteImport } from './routes/settings/post-processing/index'
+import { Route as SettingsLibraryImportIndexRouteImport } from './routes/settings/library-import/index'
 import { Route as SettingsIndexersIndexRouteImport } from './routes/settings/indexers/index'
 import { Route as SettingsDownloadClientsIndexRouteImport } from './routes/settings/download-clients/index'
 import { Route as SeriesSeriesIdIndexRouteImport } from './routes/series/$seriesId/index'
@@ -49,6 +52,23 @@ const PullListIndexRoute = PullListIndexRouteImport.update({
   path: '/pull-list/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const DashboardIndexRoute = DashboardIndexRouteImport.update({
+  id: '/dashboard/',
+  path: '/dashboard/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SettingsPostProcessingIndexRoute =
+  SettingsPostProcessingIndexRouteImport.update({
+    id: '/post-processing/',
+    path: '/post-processing/',
+    getParentRoute: () => SettingsRoute,
+  } as any)
+const SettingsLibraryImportIndexRoute =
+  SettingsLibraryImportIndexRouteImport.update({
+    id: '/library-import/',
+    path: '/library-import/',
+    getParentRoute: () => SettingsRoute,
+  } as any)
 const SettingsIndexersIndexRoute = SettingsIndexersIndexRouteImport.update({
   id: '/indexers/',
   path: '/indexers/',
@@ -69,6 +89,7 @@ const SeriesSeriesIdIndexRoute = SeriesSeriesIdIndexRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/settings': typeof SettingsRouteWithChildren
+  '/dashboard/': typeof DashboardIndexRoute
   '/pull-list/': typeof PullListIndexRoute
   '/queue/': typeof QueueIndexRoute
   '/series/': typeof SeriesIndexRoute
@@ -76,9 +97,12 @@ export interface FileRoutesByFullPath {
   '/series/$seriesId/': typeof SeriesSeriesIdIndexRoute
   '/settings/download-clients/': typeof SettingsDownloadClientsIndexRoute
   '/settings/indexers/': typeof SettingsIndexersIndexRoute
+  '/settings/library-import/': typeof SettingsLibraryImportIndexRoute
+  '/settings/post-processing/': typeof SettingsPostProcessingIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/dashboard': typeof DashboardIndexRoute
   '/pull-list': typeof PullListIndexRoute
   '/queue': typeof QueueIndexRoute
   '/series': typeof SeriesIndexRoute
@@ -86,11 +110,14 @@ export interface FileRoutesByTo {
   '/series/$seriesId': typeof SeriesSeriesIdIndexRoute
   '/settings/download-clients': typeof SettingsDownloadClientsIndexRoute
   '/settings/indexers': typeof SettingsIndexersIndexRoute
+  '/settings/library-import': typeof SettingsLibraryImportIndexRoute
+  '/settings/post-processing': typeof SettingsPostProcessingIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/settings': typeof SettingsRouteWithChildren
+  '/dashboard/': typeof DashboardIndexRoute
   '/pull-list/': typeof PullListIndexRoute
   '/queue/': typeof QueueIndexRoute
   '/series/': typeof SeriesIndexRoute
@@ -98,12 +125,15 @@ export interface FileRoutesById {
   '/series/$seriesId/': typeof SeriesSeriesIdIndexRoute
   '/settings/download-clients/': typeof SettingsDownloadClientsIndexRoute
   '/settings/indexers/': typeof SettingsIndexersIndexRoute
+  '/settings/library-import/': typeof SettingsLibraryImportIndexRoute
+  '/settings/post-processing/': typeof SettingsPostProcessingIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
     | '/settings'
+    | '/dashboard/'
     | '/pull-list/'
     | '/queue/'
     | '/series/'
@@ -111,9 +141,12 @@ export interface FileRouteTypes {
     | '/series/$seriesId/'
     | '/settings/download-clients/'
     | '/settings/indexers/'
+    | '/settings/library-import/'
+    | '/settings/post-processing/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/dashboard'
     | '/pull-list'
     | '/queue'
     | '/series'
@@ -121,10 +154,13 @@ export interface FileRouteTypes {
     | '/series/$seriesId'
     | '/settings/download-clients'
     | '/settings/indexers'
+    | '/settings/library-import'
+    | '/settings/post-processing'
   id:
     | '__root__'
     | '/'
     | '/settings'
+    | '/dashboard/'
     | '/pull-list/'
     | '/queue/'
     | '/series/'
@@ -132,11 +168,14 @@ export interface FileRouteTypes {
     | '/series/$seriesId/'
     | '/settings/download-clients/'
     | '/settings/indexers/'
+    | '/settings/library-import/'
+    | '/settings/post-processing/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   SettingsRoute: typeof SettingsRouteWithChildren
+  DashboardIndexRoute: typeof DashboardIndexRoute
   PullListIndexRoute: typeof PullListIndexRoute
   QueueIndexRoute: typeof QueueIndexRoute
   SeriesIndexRoute: typeof SeriesIndexRoute
@@ -187,6 +226,27 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof PullListIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/dashboard/': {
+      id: '/dashboard/'
+      path: '/dashboard'
+      fullPath: '/dashboard/'
+      preLoaderRoute: typeof DashboardIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/settings/post-processing/': {
+      id: '/settings/post-processing/'
+      path: '/post-processing'
+      fullPath: '/settings/post-processing/'
+      preLoaderRoute: typeof SettingsPostProcessingIndexRouteImport
+      parentRoute: typeof SettingsRoute
+    }
+    '/settings/library-import/': {
+      id: '/settings/library-import/'
+      path: '/library-import'
+      fullPath: '/settings/library-import/'
+      preLoaderRoute: typeof SettingsLibraryImportIndexRouteImport
+      parentRoute: typeof SettingsRoute
+    }
     '/settings/indexers/': {
       id: '/settings/indexers/'
       path: '/indexers'
@@ -215,12 +275,16 @@ interface SettingsRouteChildren {
   SettingsIndexRoute: typeof SettingsIndexRoute
   SettingsDownloadClientsIndexRoute: typeof SettingsDownloadClientsIndexRoute
   SettingsIndexersIndexRoute: typeof SettingsIndexersIndexRoute
+  SettingsLibraryImportIndexRoute: typeof SettingsLibraryImportIndexRoute
+  SettingsPostProcessingIndexRoute: typeof SettingsPostProcessingIndexRoute
 }
 
 const SettingsRouteChildren: SettingsRouteChildren = {
   SettingsIndexRoute: SettingsIndexRoute,
   SettingsDownloadClientsIndexRoute: SettingsDownloadClientsIndexRoute,
   SettingsIndexersIndexRoute: SettingsIndexersIndexRoute,
+  SettingsLibraryImportIndexRoute: SettingsLibraryImportIndexRoute,
+  SettingsPostProcessingIndexRoute: SettingsPostProcessingIndexRoute,
 }
 
 const SettingsRouteWithChildren = SettingsRoute._addFileChildren(
@@ -230,6 +294,7 @@ const SettingsRouteWithChildren = SettingsRoute._addFileChildren(
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   SettingsRoute: SettingsRouteWithChildren,
+  DashboardIndexRoute: DashboardIndexRoute,
   PullListIndexRoute: PullListIndexRoute,
   QueueIndexRoute: QueueIndexRoute,
   SeriesIndexRoute: SeriesIndexRoute,

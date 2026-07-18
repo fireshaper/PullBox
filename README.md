@@ -125,18 +125,18 @@ Requires Python 3.12 and [uv](https://docs.astral.sh/uv/).
 
 ```bash
 cd backend
-python -m uv sync
-python -m uv run fastapi dev pullbox/main.py
+uv sync
+uv run fastapi dev pullbox/main.py --port 8585
 ```
 
 API available at **http://localhost:8585**. Interactive docs at **http://localhost:8585/docs**.
 
 ```bash
 # Run tests
-python -m uv run pytest
+uv run pytest
 
 # Lint
-python -m uv run ruff check pullbox/ tests/
+uv run ruff check pullbox/ tests/
 ```
 
 ### Frontend
@@ -158,7 +158,7 @@ npm run type-check  # TypeScript validation
 
 ```bash
 # Terminal 1
-cd backend && python -m uv run fastapi dev pullbox/main.py
+cd backend && uv run fastapi dev pullbox/main.py --port 8585
 
 # Terminal 2
 cd frontend && npm run dev

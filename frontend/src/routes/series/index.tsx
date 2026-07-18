@@ -1,7 +1,7 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Search } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { get, post } from '../../api/client'
 import { Skeleton } from '../../components/ui/skeleton'
 
@@ -42,6 +42,22 @@ export const Route = createFileRoute('/series/')({
   component: SeriesPage,
 })
 
+// ── Alphabet helpers ──────────────────────────────────────────────────────────
+
+const ALPHABET = ['#', ...'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('')]
+
+// Bucket a title under its first alphanumeric character; anything else (numbers,
+// symbols, leading punctuation) lands under '#'. Kept in sync with the backend's
+// case-insensitive title ordering.
+function letterOf(title: string): string {
+  const ch = title.trim().charAt(0).toUpperCase()
+  return ch >= 'A' && ch <= 'Z' ? ch : '#'
+}
+
+// How many rows to reveal initially and per scroll step (client-side infinite
+// scroll — all data is already loaded, this just keeps the DOM light).
+const REVEAL_STEP = 40
+
 // ── Sub-components ────────────────────────────────────────────────────────────
 
 function CoverThumb({ url, alt }: { url: string | null; alt: string }) {
@@ -78,6 +94,71 @@ function MetaLine({ publisher, startYear }: { publisher: string | null; startYea
   )
 }
 
+function LetterHeader({ letter }: { letter: string }) {
+  return (
+    <div
+      id={`series-letter-${letter}`}
+      style={{
+        scrollMarginTop: '12px',
+        fontSize: '0.7rem',
+        fontWeight: 700,
+        letterSpacing: '0.05em',
+        color: 'var(--color-muted)',
+        padding: '10px 4px 2px',
+      }}
+    >
+      {letter}
+    </div>
+  )
+}
+
+function AlphabetRail({
+  present,
+  onJump,
+}: {
+  present: Set<string>
+  onJump: (letter: string) => void
+}) {
+  return (
+    <div
+      style={{
+        position: 'sticky',
+        top: 0,
+        alignSelf: 'flex-start',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '1px',
+        paddingLeft: '8px',
+        userSelect: 'none',
+      }}
+    >
+      {ALPHABET.map((letter) => {
+        const enabled = present.has(letter)
+        return (
+          <button
+            key={letter}
+            onClick={() => enabled && onJump(letter)}
+            disabled={!enabled}
+            aria-label={`Jump to ${letter}`}
+            style={{
+              background: 'none',
+              border: 'none',
+              padding: '0 4px',
+              lineHeight: 1.15,
+              fontSize: '0.68rem',
+              fontWeight: 600,
+              cursor: enabled ? 'pointer' : 'default',
+              color: enabled ? 'var(--color-accent)' : 'var(--color-border)',
+            }}
+          >
+            {letter}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 function SeriesPage() {
@@ -95,7 +176,7 @@ function SeriesPage() {
 
   const { data: library, isLoading: libLoading } = useQuery<PaginatedSeries>({
     queryKey: ['series', 'library'],
-    queryFn: () => get<PaginatedSeries>('/series/?subscribed=true'),
+    queryFn: () => get<PaginatedSeries>('/series/?subscribed=true&all=true'),
     enabled: !isSearching,
   })
 
@@ -114,6 +195,64 @@ function SeriesPage() {
       navigate({ to: '/series/$seriesId', params: { seriesId: String(data.id) } })
     },
   })
+
+  // ── Client-side infinite scroll + alphabet index ────────────────────────────
+
+  const seriesList = library?.items
+  const present = useMemo(() => {
+    const set = new Set<string>()
+    for (const s of seriesList ?? []) set.add(letterOf(s.title))
+    return set
+  }, [seriesList])
+
+  const [visibleCount, setVisibleCount] = useState(REVEAL_STEP)
+  const [pendingJump, setPendingJump] = useState<string | null>(null)
+  const sentinelRef = useRef<HTMLDivElement | null>(null)
+
+  // Reset the reveal window whenever the underlying list changes.
+  useEffect(() => {
+    setVisibleCount(REVEAL_STEP)
+  }, [seriesList])
+
+  const total = seriesList?.length ?? 0
+
+  // Reveal more rows as the sentinel scrolls into view.
+  useEffect(() => {
+    const node = sentinelRef.current
+    if (!node || visibleCount >= total) return
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting) {
+          setVisibleCount((c) => Math.min(c + REVEAL_STEP, total))
+        }
+      },
+      { rootMargin: '400px' },
+    )
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [visibleCount, total])
+
+  // Jump to a letter: reveal its section if needed, then flag it for scrolling.
+  function jumpToLetter(letter: string) {
+    if (!seriesList) return
+    const index = seriesList.findIndex((s) => letterOf(s.title) === letter)
+    if (index < 0) return
+    if (index >= visibleCount) {
+      setVisibleCount(Math.min(index + REVEAL_STEP, total))
+    }
+    setPendingJump(letter)
+  }
+
+  // Scroll to a pending jump only once its section header is in the DOM — runs
+  // after the reveal above has committed, so the target always exists.
+  useEffect(() => {
+    if (!pendingJump) return
+    const el = document.getElementById(`series-letter-${pendingJump}`)
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      setPendingJump(null)
+    }
+  }, [pendingJump, visibleCount])
 
   const showLoading = isSearching ? searchLoading : libLoading
 
@@ -265,9 +404,9 @@ function SeriesPage() {
       )}
 
       {/* Library list */}
-      {!isSearching && !libLoading && library && (
+      {!isSearching && !libLoading && library && seriesList && (
         <>
-          {library.items.length === 0 ? (
+          {seriesList.length === 0 ? (
             <div
               style={{
                 textAlign: 'center',
@@ -279,39 +418,53 @@ function SeriesPage() {
               No subscribed series yet. Search above to add one.
             </div>
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-              {library.items.map((s) => (
-                <div
-                  key={s.id}
-                  onClick={() =>
-                    navigate({ to: '/series/$seriesId', params: { seriesId: String(s.id) } })
-                  }
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter')
-                      navigate({ to: '/series/$seriesId', params: { seriesId: String(s.id) } })
-                  }}
-                  role="button"
-                  tabIndex={0}
-                  style={{ ...ROW_STYLE, cursor: 'pointer' }}
-                >
-                  <CoverThumb url={s.cover_url} alt={s.title} />
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div
-                      style={{
-                        fontWeight: 600,
-                        fontSize: '0.875rem',
-                        color: 'var(--color-text)',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
-                      }}
-                    >
-                      {s.title}
+            <div style={{ display: 'flex', gap: '4px', alignItems: 'flex-start' }}>
+              {/* Rows */}
+              <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                {seriesList.slice(0, visibleCount).map((s, i) => {
+                  const letter = letterOf(s.title)
+                  const showHeader = i === 0 || letterOf(seriesList[i - 1].title) !== letter
+                  return (
+                    <div key={s.id}>
+                      {showHeader && <LetterHeader letter={letter} />}
+                      <div
+                        onClick={() =>
+                          navigate({ to: '/series/$seriesId', params: { seriesId: String(s.id) } })
+                        }
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter')
+                            navigate({ to: '/series/$seriesId', params: { seriesId: String(s.id) } })
+                        }}
+                        role="button"
+                        tabIndex={0}
+                        style={{ ...ROW_STYLE, cursor: 'pointer' }}
+                      >
+                        <CoverThumb url={s.cover_url} alt={s.title} />
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div
+                            style={{
+                              fontWeight: 600,
+                              fontSize: '0.875rem',
+                              color: 'var(--color-text)',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            {s.title}
+                          </div>
+                          <MetaLine publisher={s.publisher} startYear={s.start_year} />
+                        </div>
+                      </div>
                     </div>
-                    <MetaLine publisher={s.publisher} startYear={s.start_year} />
-                  </div>
-                </div>
-              ))}
+                  )
+                })}
+                {/* Reveal sentinel */}
+                {visibleCount < total && <div ref={sentinelRef} style={{ height: 1 }} />}
+              </div>
+
+              {/* Alphabet jump rail */}
+              <AlphabetRail present={present} onJump={jumpToLetter} />
             </div>
           )}
         </>

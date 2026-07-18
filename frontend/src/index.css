@@ -18,3 +18,18 @@ body {
   background-color: var(--color-bg);
   color: var(--color-text);
 }
+
+/* Indeterminate progress bar for active downloads (no percentage is tracked). */
+@keyframes pb-indeterminate {
+  0% { left: -40%; }
+  100% { left: 100%; }
+}
+.pb-indeterminate-bar {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 40%;
+  border-radius: inherit;
+  background: var(--color-status-downloading);
+  animation: pb-indeterminate 1.2s ease-in-out infinite;
+}

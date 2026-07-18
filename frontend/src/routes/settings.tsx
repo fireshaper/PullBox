@@ -7,6 +7,8 @@ export const Route = createFileRoute('/settings')({
 const SETTINGS_NAV = [
   { to: '/settings/indexers', label: 'Indexers' },
   { to: '/settings/download-clients', label: 'Download Clients' },
+  { to: '/settings/post-processing', label: 'Post-Download' },
+  { to: '/settings/library-import', label: 'Import Library' },
 ] as const
 
 function SettingsLayout() {

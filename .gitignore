@@ -2,6 +2,10 @@
 config/config.yaml
 config/*.db
 
+# Runtime logs
+config/logs/
+*.log
+
 # Python
 __pycache__/
 *.pyc
