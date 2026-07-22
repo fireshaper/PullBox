@@ -53,11 +53,30 @@ if ($LASTEXITCODE -ge 8) { throw "robocopy failed (exit code $LASTEXITCODE)" }
 $global:LASTEXITCODE = 0  # reset so a non-zero robocopy "success" code doesn't leak
 
 # ── 5. Zip the staged folder ──────────────────────────────────────────────────
+# Use .NET ZipFile (faster and more reliable than Compress-Archive) with a retry:
+# freshly-copied files can be briefly locked by antivirus, the editor's file
+# watcher, or a running "uvicorn --reload" dev server, which would otherwise
+# abort the whole build with a "being used by another process" error.
 Write-Host '==> Zipping ...' -ForegroundColor Cyan
-if (Test-Path -LiteralPath $ZipPath) {
-    Remove-Item -LiteralPath $ZipPath -Force
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+
+$maxAttempts = 4
+for ($attempt = 1; ; $attempt++) {
+    try {
+        if (Test-Path -LiteralPath $ZipPath) {
+            Remove-Item -LiteralPath $ZipPath -Force
+        }
+        [System.IO.Compression.ZipFile]::CreateFromDirectory($CopyDir, $ZipPath)
+        break
+    }
+    catch {
+        if ($attempt -ge $maxAttempts) {
+            throw "Zip failed after $maxAttempts attempts: $($_.Exception.Message)"
+        }
+        Write-Host "   attempt $attempt failed (file locked?); retrying in 3s ..." -ForegroundColor Yellow
+        Start-Sleep -Seconds 3
+    }
 }
-Compress-Archive -Path (Join-Path $CopyDir '*') -DestinationPath $ZipPath
 
 $zipMB = [math]::Round((Get-Item -LiteralPath $ZipPath).Length / 1MB, 1)
 Write-Host ""

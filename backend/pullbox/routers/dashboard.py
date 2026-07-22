@@ -19,7 +19,7 @@ from fastapi import APIRouter
 from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
-from pullbox.deps import ComicVineClientDep, DbDep, SettingsDep
+from pullbox.deps import DbDep, MetadataProviderDep, SettingsDep
 from pullbox.models import DownloadJob, ImportFile, Issue, Series, WeeklyRelease
 from pullbox.schemas import (
     DashboardActivityResponse,
@@ -293,23 +293,23 @@ async def _releases_for_range(
 
 
 @router.get("/pull", response_model=DashboardPullResponse)
-async def pull(db: DbDep, cv: ComicVineClientDep, settings: SettingsDep):
+async def pull(db: DbDep, provider: MetadataProviderDep, settings: SettingsDep):
     """This week's releases (all) + upcoming subscribed releases.
 
-    Refreshes only the *current* week from ComicVine (one API call, guarded by
-    the shared rate limiter) so the landing page stays fresh without a burst of
-    calls; upcoming weeks are read from whatever the pull list / nightly refresh
-    has already cached.
+    Refreshes only the *current* week from the metadata provider (one API call,
+    guarded by the shared rate limiter) so the landing page stays fresh without a
+    burst of calls; upcoming weeks are read from whatever the pull list / nightly
+    refresh has already cached.
     """
     today = date.today()
     monday = today - timedelta(days=today.weekday())
     sunday = monday + timedelta(days=6)
 
-    if settings.comicvine_api_key:
+    if settings.metadata_configured:
         from pullbox.routers.releases import _refresh_week  # noqa: PLC0415
 
         try:
-            await _refresh_week(db, cv, monday, sunday)
+            await _refresh_week(db, provider, monday, sunday)
             await sync_svc.record_sync(
                 db, sync_svc.CALENDAR, success=True, message="Synced current week"
             )
@@ -319,7 +319,7 @@ async def pull(db: DbDep, cv: ComicVineClientDep, settings: SettingsDep):
                 db,
                 sync_svc.CALENDAR,
                 success=False,
-                message=str(exc) or "ComicVine fetch failed",
+                message=str(exc) or "provider fetch failed",
             )
 
     this_week = await _releases_for_range(db, monday, sunday, subscribed_only=False)

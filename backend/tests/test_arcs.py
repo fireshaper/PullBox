@@ -10,7 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from pullbox.clients.comicvine import ComicVineClient, ComicVineError
-from pullbox.deps import get_comicvine_client
+from pullbox.deps import get_metadata_provider
 from pullbox.main import app
 
 
@@ -125,8 +125,10 @@ async def test_get_story_arc_maps_metadata_and_issues():
 
 
 # ── Enrichment on sync + issue-arcs endpoint (via TestClient) ─────────────────
+# Provider-normalized records: Metron ids are primary; ComicVine ids are cross-refs.
 
 FAKE_VOLUME = {
+    "metron_id": "m99001",
     "comicvine_id": "99001",
     "title": "Batman",
     "publisher": "DC Comics",
@@ -138,6 +140,7 @@ FAKE_VOLUME = {
 
 FAKE_ISSUES = [
     {
+        "metron_id": "m555001",
         "comicvine_id": "555001",
         "issue_number": "1",
         "title": "One",
@@ -147,6 +150,7 @@ FAKE_ISSUES = [
         "description": None,
     },
     {
+        "metron_id": "m555002",
         "comicvine_id": "555002",
         "issue_number": "2",
         "title": "Two",
@@ -157,15 +161,17 @@ FAKE_ISSUES = [
     },
 ]
 
-# Per-issue detail responses keyed by comicvine issue id.
+# Per-issue detail responses keyed by metron issue id.
 ISSUE_DETAILS = {
-    "555001": {
+    "m555001": {
+        "metron_id": "m555001",
         "comicvine_id": "555001",
         "issue_number": "1",
         "title": "One",
-        "story_arcs": [{"comicvine_id": "4045111", "name": "Dark Nights"}],
+        "story_arcs": [{"metron_id": "m4045111", "comicvine_id": "4045111", "name": "Dark Nights"}],
     },
-    "555002": {
+    "m555002": {
+        "metron_id": "m555002",
         "comicvine_id": "555002",
         "issue_number": "2",
         "title": "Two",
@@ -174,6 +180,7 @@ ISSUE_DETAILS = {
 }
 
 ARC_DETAIL = {
+    "metron_id": "m4045111",
     "comicvine_id": "4045111",
     "name": "Dark Nights",
     "publisher": "DC Comics",
@@ -181,34 +188,36 @@ ARC_DETAIL = {
     "description": "A crossover.",
     "count_of_issue_appearances": 3,
     "issues": [
-        # One is in the local library (matches 555001), the other is external.
-        {"comicvine_id": "555001", "name": "One", "site_detail_url": "https://cv/i/1"},
-        {"comicvine_id": "888999", "name": "Elsewhere #4", "site_detail_url": "https://cv/i/2"},
+        # One is in the local library (matches m555001), the other is external.
+        {"metron_id": "m555001", "comicvine_id": "555001", "name": "One",
+         "site_detail_url": "https://metron/i/1"},
+        {"metron_id": "m888999", "comicvine_id": "888999", "name": "Elsewhere #4",
+         "site_detail_url": "https://metron/i/2"},
     ],
 }
 
 
-def _make_mock_cv() -> AsyncMock:
+def _make_mock_provider() -> AsyncMock:
     mock = AsyncMock()
     mock.get_volume.return_value = FAKE_VOLUME
     mock.get_issues.return_value = FAKE_ISSUES
-    mock.get_issue.side_effect = lambda cv_id: ISSUE_DETAILS[cv_id]
+    mock.get_issue.side_effect = lambda **kw: ISSUE_DETAILS[kw.get("metron_id") or kw.get("comicvine_id")]
     mock.get_story_arc.return_value = ARC_DETAIL
     return mock
 
 
 @pytest.fixture
 def cv_mock():
-    mock = _make_mock_cv()
+    mock = _make_mock_provider()
 
     async def _override():
         yield mock
 
-    app.dependency_overrides[get_comicvine_client] = _override
+    app.dependency_overrides[get_metadata_provider] = _override
     try:
         yield mock
     finally:
-        app.dependency_overrides.pop(get_comicvine_client, None)
+        app.dependency_overrides.pop(get_metadata_provider, None)
 
 
 @pytest.fixture
@@ -218,7 +227,7 @@ def client():
 
 
 def _add_and_sync(client) -> int:
-    add = client.post("/api/series/", json={"comicvine_id": "99001"})
+    add = client.post("/api/series/", json={"metron_id": "m99001"})
     assert add.status_code == 201
     series_id = add.json()["id"]
     sync = client.post(f"/api/series/{series_id}/sync-issues")
@@ -260,16 +269,16 @@ def test_issue_arcs_endpoint_returns_members(client, cv_mock):
     assert arc["name"] == "Dark Nights"
     assert arc["count_of_issue_appearances"] == 3
 
-    members = {m["comicvine_id"]: m for m in arc["issues"]}
+    members = {m["metron_id"]: m for m in arc["issues"]}
     # Local member is hydrated with library info.
-    assert members["555001"]["in_library"] is True
-    assert members["555001"]["local_issue_id"] == issue1["id"]
-    assert members["555001"]["local_series_id"] == series_id
-    assert members["555001"]["local_series_title"] == "Batman"
-    # External member is flagged out-of-library with just its ComicVine data.
-    assert members["888999"]["in_library"] is False
-    assert members["888999"]["local_issue_id"] is None
-    assert members["888999"]["site_detail_url"] == "https://cv/i/2"
+    assert members["m555001"]["in_library"] is True
+    assert members["m555001"]["local_issue_id"] == issue1["id"]
+    assert members["m555001"]["local_series_id"] == series_id
+    assert members["m555001"]["local_series_title"] == "Batman"
+    # External member is flagged out-of-library with just its provider data.
+    assert members["m888999"]["in_library"] is False
+    assert members["m888999"]["local_issue_id"] is None
+    assert members["m888999"]["site_detail_url"] == "https://metron/i/2"
 
 
 def test_issue_arcs_empty_for_issue_without_arcs(client, cv_mock):

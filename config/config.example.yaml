@@ -3,9 +3,20 @@
 # Environment variables prefixed with PULLBOX_ override any setting here.
 # Example: PULLBOX_DEBUG=true overrides debug below.
 
-# ── Required ─────────────────────────────────────────────────────────────────
+# ── Metadata source ──────────────────────────────────────────────────────────
 
-# ComicVine API key (get yours at https://comicvine.gamespot.com/api/documentation/)
+# Metron is the primary comic-metadata source (https://metron.cloud/). It requires
+# a registered account — these are your login username/password (HTTP Basic auth),
+# NOT an API key. Sign up at https://metron.cloud/accounts/register/.
+metron_username: ""
+metron_password: ""
+
+# Which provider is primary: "metron" (default) or "comicvine". The other, if
+# configured, is used as a per-operation fallback.
+metadata_provider: "metron"
+
+# ComicVine API key (get yours at https://comicvine.gamespot.com/api/documentation/).
+# Optional — used as a fallback when Metron is primary. Leave blank to disable.
 comicvine_api_key: ""
 
 # Secret key for signing internal tokens. Change this to a random string.

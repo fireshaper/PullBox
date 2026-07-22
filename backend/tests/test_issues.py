@@ -7,10 +7,11 @@ from unittest.mock import AsyncMock
 import pytest
 from fastapi.testclient import TestClient
 
-from pullbox.deps import get_comicvine_client
+from pullbox.deps import get_metadata_provider
 from pullbox.main import app
 
 FAKE_VOLUME = {
+    "metron_id": "m99010",
     "comicvine_id": "99010",
     "title": "X-Men",
     "publisher": "Marvel",
@@ -22,6 +23,7 @@ FAKE_VOLUME = {
 
 FAKE_ISSUES = [
     {
+        "metron_id": "m600001",
         "comicvine_id": "600001",
         "issue_number": "1",
         "title": "First Issue",
@@ -31,6 +33,7 @@ FAKE_ISSUES = [
         "description": None,
     },
     {
+        "metron_id": "m600002",
         "comicvine_id": "600002",
         "issue_number": "2",
         "title": "Second Issue",
@@ -42,12 +45,12 @@ FAKE_ISSUES = [
 ]
 
 
-def _make_mock_cv(*, volume=None, issues=None):
+def _make_mock_provider(*, volume=None, issues=None):
     mock = AsyncMock()
-    if volume is not None:
-        mock.get_volume.return_value = volume
+    mock.get_volume.return_value = volume if volume is not None else FAKE_VOLUME
     if issues is not None:
         mock.get_issues.return_value = issues
+    mock.get_issue.return_value = {"metron_id": None, "comicvine_id": None, "story_arcs": []}
 
     async def _override():
         yield mock
@@ -64,18 +67,18 @@ def client():
 @pytest.fixture
 def seeded(client):
     """Add a series with two synced issues; return list of issue dicts."""
-    app.dependency_overrides[get_comicvine_client] = _make_mock_cv(volume=FAKE_VOLUME)
+    app.dependency_overrides[get_metadata_provider] = _make_mock_provider(volume=FAKE_VOLUME)
     try:
         add_resp = client.post("/api/series/", json={"comicvine_id": "99010"})
         series_id = add_resp.json()["id"]
     finally:
-        app.dependency_overrides.pop(get_comicvine_client, None)
+        app.dependency_overrides.pop(get_metadata_provider, None)
 
-    app.dependency_overrides[get_comicvine_client] = _make_mock_cv(issues=FAKE_ISSUES)
+    app.dependency_overrides[get_metadata_provider] = _make_mock_provider(issues=FAKE_ISSUES)
     try:
         client.post(f"/api/series/{series_id}/sync-issues")
     finally:
-        app.dependency_overrides.pop(get_comicvine_client, None)
+        app.dependency_overrides.pop(get_metadata_provider, None)
 
     issues_resp = client.get(f"/api/series/{series_id}/issues")
     return issues_resp.json()

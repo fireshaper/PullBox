@@ -33,6 +33,14 @@ class Settings(BaseSettings):
     library_path: str = "/comics"
     config_path: str = "/config"
     comicvine_api_key: str = ""
+    # Metron credentials (https://metron.cloud/ — requires a registered account;
+    # HTTP Basic auth, not an API key). When set, Metron is the primary metadata
+    # source and ComicVine (if its key is set) is used only as a fallback.
+    metron_username: str = ""
+    metron_password: str = ""
+    # Which provider is primary: "metron" (default) or "comicvine". The other, if
+    # configured, is used as a per-operation fallback.
+    metadata_provider: str = "metron"
     retry_time: str = "06:00"
     max_retries: int = 20
     pull_list_lookahead_weeks: int = 2
@@ -40,6 +48,10 @@ class Settings(BaseSettings):
     # requests/hour per resource and throttles rapid bursts; keep headroom.
     comicvine_min_interval: float = 1.0
     comicvine_rate_limit_per_hour: int = 190
+    # Metron rate limiting (shared across all callers). Metron caps 20 requests/min
+    # (burst) and 5000/day (sustained); keep headroom under both.
+    metron_rate_limit_per_min: int = 18
+    metron_rate_limit_per_day: int = 4800
     # Background ComicVine backfill for imported issues: how often a batch runs
     # and how many un-synced issues to sample per batch (see sync_imported_issues).
     import_sync_interval_minutes: int = 5
@@ -48,6 +60,13 @@ class Settings(BaseSettings):
     debug: bool = False
 
     model_config = {"env_prefix": "PULLBOX_"}
+
+    @property
+    def metadata_configured(self) -> bool:
+        """True when at least one metadata source (Metron or ComicVine) has credentials."""
+        return bool(
+            (self.metron_username and self.metron_password) or self.comicvine_api_key
+        )
 
     @classmethod
     def settings_customise_sources(

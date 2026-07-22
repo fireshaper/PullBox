@@ -9,7 +9,8 @@ import { Skeleton } from '../../components/ui/skeleton'
 
 type SeriesRow = {
   id: number
-  comicvine_id: string
+  metron_id: string | null
+  comicvine_id: string | null
   title: string
   publisher: string | null
   start_year: number | null
@@ -24,8 +25,9 @@ type PaginatedSeries = {
   items: SeriesRow[]
 }
 
-type CvSearchResult = {
-  comicvine_id: string
+type SearchResult = {
+  metron_id: string | null
+  comicvine_id: string | null
   title: string
   publisher: string | null
   start_year: number | null
@@ -33,6 +35,12 @@ type CvSearchResult = {
   issue_count: number
   in_library: boolean
 }
+
+// A search result's metadata id(s) — whichever the provider supplied.
+type SeriesId = { metron_id: string | null; comicvine_id: string | null }
+
+// Stable identity for a search result across renders / mutation state.
+const idKey = (r: SeriesId | undefined) => (r ? (r.metron_id ?? r.comicvine_id ?? '') : '')
 
 type AddSeriesResponse = { id: number }
 
@@ -180,16 +188,21 @@ function SeriesPage() {
     enabled: !isSearching,
   })
 
-  const { data: searchResults, isLoading: searchLoading } = useQuery<CvSearchResult[]>({
+  const { data: searchResults, isLoading: searchLoading } = useQuery<SearchResult[]>({
     queryKey: ['series', 'search', debouncedQuery.trim()],
     queryFn: () =>
-      get<CvSearchResult[]>(`/series/search?q=${encodeURIComponent(debouncedQuery.trim())}`),
+      get<SearchResult[]>(`/series/search?q=${encodeURIComponent(debouncedQuery.trim())}`),
     enabled: isSearching,
   })
 
   const addMutation = useMutation({
-    mutationFn: (comicvine_id: string) =>
-      post<AddSeriesResponse>('/series/', { comicvine_id, subscribed: false, auto_download: false }),
+    mutationFn: (r: SeriesId) =>
+      post<AddSeriesResponse>('/series/', {
+        metron_id: r.metron_id,
+        comicvine_id: r.comicvine_id,
+        subscribed: false,
+        auto_download: false,
+      }),
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['series', 'library'] })
       navigate({ to: '/series/$seriesId', params: { seriesId: String(data.id) } })
@@ -336,7 +349,7 @@ function SeriesPage() {
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
               {searchResults.map((r) => (
-                <div key={r.comicvine_id} style={ROW_STYLE}>
+                <div key={idKey(r)} style={ROW_STYLE}>
                   <CoverThumb url={r.cover_url} alt={r.title} />
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div
@@ -370,8 +383,12 @@ function SeriesPage() {
                     </span>
                   ) : (
                     <button
-                      onClick={() => addMutation.mutate(r.comicvine_id)}
-                      disabled={addMutation.isPending && addMutation.variables === r.comicvine_id}
+                      onClick={() =>
+                        addMutation.mutate({ metron_id: r.metron_id, comicvine_id: r.comicvine_id })
+                      }
+                      disabled={
+                        addMutation.isPending && idKey(addMutation.variables) === idKey(r)
+                      }
                       style={{
                         padding: '6px 14px',
                         borderRadius: '5px',
@@ -381,17 +398,17 @@ function SeriesPage() {
                         color: '#fff',
                         border: 'none',
                         cursor:
-                          addMutation.isPending && addMutation.variables === r.comicvine_id
+                          addMutation.isPending && idKey(addMutation.variables) === idKey(r)
                             ? 'wait'
                             : 'pointer',
                         flexShrink: 0,
                         opacity:
-                          addMutation.isPending && addMutation.variables !== r.comicvine_id
+                          addMutation.isPending && idKey(addMutation.variables) !== idKey(r)
                             ? 0.5
                             : 1,
                       }}
                     >
-                      {addMutation.isPending && addMutation.variables === r.comicvine_id
+                      {addMutation.isPending && idKey(addMutation.variables) === idKey(r)
                         ? 'Adding…'
                         : 'Add'}
                     </button>

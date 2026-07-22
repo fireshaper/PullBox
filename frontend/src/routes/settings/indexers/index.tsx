@@ -1,8 +1,9 @@
 import { createFileRoute } from '@tanstack/react-router'
+import type { ReactNode } from 'react'
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { CheckCircle, XCircle } from 'lucide-react'
-import { del, get, post } from '../../../api/client'
+import { del, get, patch, post } from '../../../api/client'
 import {
   Dialog,
   DialogContent,
@@ -70,6 +71,9 @@ const EMPTY_FORM: AddForm = {
   priority: 100,
   enabled: true,
 }
+
+// Indexer types that support a connection test
+const TESTABLE_TYPES = ['newznab', 'nzbhydra2', 'prowlarr', 'jackett']
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -161,57 +165,81 @@ function DeleteButton({ indexerId }: { indexerId: number }) {
   )
 }
 
-function AddIndexerDialog({ onAdded }: { onAdded: () => void }) {
+function formFromIndexer(indexer: Indexer): AddForm {
+  return {
+    name: indexer.name,
+    type: indexer.type,
+    url: indexer.url,
+    api_key: indexer.api_key ?? '',
+    priority: indexer.priority,
+    enabled: indexer.enabled,
+  }
+}
+
+function IndexerFormDialog({
+  indexer,
+  trigger,
+  onSaved,
+}: {
+  indexer?: Indexer
+  trigger: ReactNode
+  onSaved: () => void
+}) {
+  const isEdit = indexer !== undefined
+  const initialForm = isEdit ? formFromIndexer(indexer) : EMPTY_FORM
   const [open, setOpen] = useState(false)
-  const [form, setForm] = useState<AddForm>(EMPTY_FORM)
+  const [form, setForm] = useState<AddForm>(initialForm)
 
   const { mutate, isPending, error, reset } = useMutation({
-    mutationFn: () =>
-      post('/indexers/', {
-        ...form,
-        api_key: form.api_key || null,
-      }),
+    mutationFn: () => {
+      const payload = { ...form, api_key: form.api_key || null }
+      return isEdit
+        ? patch(`/indexers/${indexer.id}`, payload)
+        : post('/indexers/', payload)
+    },
     onSuccess: () => {
       setOpen(false)
-      setForm(EMPTY_FORM)
-      onAdded()
+      if (!isEdit) setForm(EMPTY_FORM)
+      onSaved()
     },
+  })
+
+  const test = useMutation({
+    mutationFn: () =>
+      post<{ success: boolean; message: string }>('/indexers/test', {
+        type: form.type,
+        url: form.url,
+        api_key: form.api_key || null,
+      }),
   })
 
   function handleOpenChange(next: boolean) {
     setOpen(next)
-    if (!next) {
-      setForm(EMPTY_FORM)
+    if (next) {
+      // Re-seed from latest values whenever the dialog opens
+      setForm(isEdit ? formFromIndexer(indexer) : EMPTY_FORM)
+      reset()
+    } else {
       reset()
     }
+    test.reset()
   }
 
   const canSubmit = form.name.trim() !== '' && form.url.trim() !== '' && !isPending
+  const canTest =
+    TESTABLE_TYPES.includes(form.type) && form.url.trim() !== '' && !test.isPending
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogTrigger asChild>
-        <button
-          style={{
-            fontSize: '0.875rem',
-            padding: '6px 16px',
-            borderRadius: '6px',
-            background: 'var(--color-accent)',
-            color: '#fff',
-            border: 'none',
-            cursor: 'pointer',
-            fontWeight: 500,
-          }}
-        >
-          Add Indexer
-        </button>
-      </DialogTrigger>
+      <DialogTrigger asChild>{trigger}</DialogTrigger>
 
       <DialogContent
         style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border)' }}
       >
         <DialogHeader>
-          <DialogTitle style={{ color: 'var(--color-text)' }}>Add Indexer</DialogTitle>
+          <DialogTitle style={{ color: 'var(--color-text)' }}>
+            {isEdit ? 'Edit Indexer' : 'Add Indexer'}
+          </DialogTitle>
         </DialogHeader>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
@@ -344,12 +372,59 @@ function AddIndexerDialog({ onAdded }: { onAdded: () => void }) {
 
           {error && (
             <p style={{ fontSize: '0.8rem', color: 'var(--color-status-failed)', margin: 0 }}>
-              {error instanceof Error ? error.message : 'Failed to add indexer'}
+              {error instanceof Error
+                ? error.message
+                : isEdit
+                  ? 'Failed to save indexer'
+                  : 'Failed to add indexer'}
             </p>
           )}
         </div>
 
-        <DialogFooter>
+        {/* Test result */}
+        {TESTABLE_TYPES.includes(form.type) && (test.isPending || test.data) && (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              fontSize: '0.8rem',
+              marginTop: '4px',
+              color: test.isPending
+                ? 'var(--color-muted)'
+                : test.data?.success
+                  ? 'var(--color-status-downloaded)'
+                  : 'var(--color-status-failed)',
+            }}
+          >
+            {!test.isPending && test.data?.success && <CheckCircle size={14} />}
+            {!test.isPending && test.data && !test.data.success && <XCircle size={14} />}
+            <span>{test.isPending ? 'Testing connection…' : test.data?.message}</span>
+          </div>
+        )}
+
+        <DialogFooter style={{ justifyContent: 'space-between' }}>
+          {TESTABLE_TYPES.includes(form.type) ? (
+            <button
+              onClick={() => test.mutate()}
+              disabled={!canTest}
+              style={{
+                fontSize: '0.875rem',
+                padding: '6px 16px',
+                borderRadius: '6px',
+                background: 'transparent',
+                color: 'var(--color-text)',
+                border: '1px solid var(--color-border)',
+                cursor: canTest ? 'pointer' : 'not-allowed',
+                opacity: canTest ? 1 : 0.6,
+                fontWeight: 500,
+              }}
+            >
+              {test.isPending ? 'Testing…' : 'Test Connection'}
+            </button>
+          ) : (
+            <span />
+          )}
           <button
             onClick={() => mutate()}
             disabled={!canSubmit}
@@ -364,7 +439,7 @@ function AddIndexerDialog({ onAdded }: { onAdded: () => void }) {
               fontWeight: 500,
             }}
           >
-            {isPending ? 'Adding…' : 'Add Indexer'}
+            {isPending ? (isEdit ? 'Saving…' : 'Adding…') : isEdit ? 'Save Changes' : 'Add Indexer'}
           </button>
         </DialogFooter>
       </DialogContent>
@@ -372,7 +447,32 @@ function AddIndexerDialog({ onAdded }: { onAdded: () => void }) {
   )
 }
 
-function IndexerCard({ indexer }: { indexer: Indexer }) {
+function EditButton({ indexer, onSaved }: { indexer: Indexer; onSaved: () => void }) {
+  return (
+    <IndexerFormDialog
+      indexer={indexer}
+      onSaved={onSaved}
+      trigger={
+        <button
+          style={{
+            fontSize: '0.72rem',
+            padding: '3px 8px',
+            borderRadius: '4px',
+            background: 'transparent',
+            color: 'var(--color-muted)',
+            border: '1px solid var(--color-border)',
+            cursor: 'pointer',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          Edit
+        </button>
+      }
+    />
+  )
+}
+
+function IndexerCard({ indexer, onSaved }: { indexer: Indexer; onSaved: () => void }) {
   return (
     <div
       style={{
@@ -473,7 +573,8 @@ function IndexerCard({ indexer }: { indexer: Indexer }) {
 
       {/* Actions */}
       <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
-        {['newznab', 'nzbhydra2'].includes(indexer.type) && <TestButton indexerId={indexer.id} />}
+        {TESTABLE_TYPES.includes(indexer.type) && <TestButton indexerId={indexer.id} />}
+        <EditButton indexer={indexer} onSaved={onSaved} />
         <DeleteButton indexerId={indexer.id} />
       </div>
     </div>
@@ -511,8 +612,24 @@ function IndexersPage() {
             Configure NZB and torrent search sources
           </p>
         </div>
-        <AddIndexerDialog
-          onAdded={() => queryClient.invalidateQueries({ queryKey: ['indexers'] })}
+        <IndexerFormDialog
+          onSaved={() => queryClient.invalidateQueries({ queryKey: ['indexers'] })}
+          trigger={
+            <button
+              style={{
+                fontSize: '0.875rem',
+                padding: '6px 16px',
+                borderRadius: '6px',
+                background: 'var(--color-accent)',
+                color: '#fff',
+                border: 'none',
+                cursor: 'pointer',
+                fontWeight: 500,
+              }}
+            >
+              Add Indexer
+            </button>
+          }
         />
       </div>
 
@@ -560,7 +677,11 @@ function IndexersPage() {
       {!isError && !isLoading && indexers && indexers.length > 0 && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
           {indexers.map((indexer) => (
-            <IndexerCard key={indexer.id} indexer={indexer} />
+            <IndexerCard
+              key={indexer.id}
+              indexer={indexer}
+              onSaved={() => queryClient.invalidateQueries({ queryKey: ['indexers'] })}
+            />
           ))}
         </div>
       )}

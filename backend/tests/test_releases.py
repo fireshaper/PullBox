@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from pullbox.deps import get_metadata_provider
 from pullbox.main import app
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -126,8 +127,25 @@ FAKE_RELEASES = [
 
 @pytest.fixture
 def client():
-    with TestClient(app) as c:
-        yield c
+    """TestClient whose metadata provider returns no live releases.
+
+    The weekly-releases endpoint refreshes the current week from the provider when
+    credentials are configured. Tests seed their own rows and assert on them, so we
+    stub the provider to return an empty week — keeping the endpoint deterministic
+    regardless of whether a real config.yaml has credentials.
+    """
+    stub = AsyncMock()
+    stub.get_weekly_releases.return_value = []
+
+    async def _override():
+        yield stub
+
+    app.dependency_overrides[get_metadata_provider] = _override
+    try:
+        with TestClient(app) as c:
+            yield c
+    finally:
+        app.dependency_overrides.pop(get_metadata_provider, None)
 
 
 # ── Step 10.1: GET /api/releases/weekly ──────────────────────────────────────
@@ -236,8 +254,9 @@ def test_calendar_refresh_creates_new_series_issues_and_releases(client):
 
     mock_cv = AsyncMock()
     mock_cv.get_weekly_releases.return_value = FAKE_RELEASES
+    mock_cv.get_volume.return_value = {"publisher": "Test Publisher", "start_year": 2021}
 
-    with patch("pullbox.clients.comicvine.ComicVineClient", return_value=mock_cv):
+    with patch("pullbox.deps.build_metadata_provider", return_value=mock_cv):
         from pullbox.scheduler import nightly_calendar_refresh
 
         asyncio.run(nightly_calendar_refresh())
@@ -246,6 +265,9 @@ def test_calendar_refresh_creates_new_series_issues_and_releases(client):
     assert after_s == 2  # 1 new series (series-new-1)
     assert after_i == 3  # 2 new issues (issue-new-1, issue-new-2); issue-existing pre-existed
     assert after_wr == 3  # 1 WeeklyRelease per release item
+
+    # The new series was enriched with a publisher from the per-volume lookup.
+    assert asyncio.run(_series_publisher("series-new-1")) == ("Test Publisher", 2021)
 
 
 def test_calendar_refresh_no_duplicates_on_rerun(client):
@@ -256,8 +278,9 @@ def test_calendar_refresh_no_duplicates_on_rerun(client):
 
     mock_cv = AsyncMock()
     mock_cv.get_weekly_releases.return_value = FAKE_RELEASES
+    mock_cv.get_volume.return_value = {"publisher": "Test Publisher", "start_year": 2021}
 
-    with patch("pullbox.clients.comicvine.ComicVineClient", return_value=mock_cv):
+    with patch("pullbox.deps.build_metadata_provider", return_value=mock_cv):
         from pullbox.scheduler import nightly_calendar_refresh
 
         asyncio.run(nightly_calendar_refresh())
@@ -279,8 +302,9 @@ def test_calendar_refresh_preserves_existing_issue_status(client):
 
     mock_cv = AsyncMock()
     mock_cv.get_weekly_releases.return_value = [FAKE_RELEASES[2]]  # only the existing issue
+    mock_cv.get_volume.return_value = {"publisher": "Test Publisher", "start_year": 2021}
 
-    with patch("pullbox.clients.comicvine.ComicVineClient", return_value=mock_cv):
+    with patch("pullbox.deps.build_metadata_provider", return_value=mock_cv):
         from pullbox.scheduler import nightly_calendar_refresh
 
         asyncio.run(nightly_calendar_refresh())
@@ -298,11 +322,122 @@ def test_calendar_refresh_preserves_existing_issue_status(client):
     assert asyncio.run(_get_status()) == "wanted"
 
 
-def test_calendar_refresh_skips_when_no_api_key(client):
-    """Refresh exits early and never calls ComicVine when comicvine_api_key is empty."""
-    with patch("pullbox.clients.comicvine.ComicVineClient") as mock_class:
+def test_calendar_refresh_skips_when_no_source(client):
+    """Refresh exits early and never builds a provider when no source is configured."""
+    import pullbox.deps as deps_module
+
+    # Force an unconfigured state regardless of any real config.yaml credentials.
+    deps_module._settings.metron_username = ""
+    deps_module._settings.metron_password = ""
+    deps_module._settings.comicvine_api_key = ""
+
+    with patch("pullbox.deps.build_metadata_provider") as mock_build:
         from pullbox.scheduler import nightly_calendar_refresh
 
         asyncio.run(nightly_calendar_refresh())
 
-    mock_class.assert_not_called()
+    mock_build.assert_not_called()
+
+
+# ── Publisher enrichment on the live page-load path (_refresh_week) ───────────
+
+
+def _weekly_payload(series_cv_id: str = "vol-100") -> list[dict]:
+    """One weekly release whose reduced volume object carries no publisher."""
+    return [
+        {
+            "comicvine_id": "issue-enrich",
+            "issue_number": "1",
+            "title": "Issue X",
+            "store_date": "2025-05-07",
+            "cover_url": None,
+            "series": {"comicvine_id": series_cv_id, "title": "Series X"},
+        }
+    ]
+
+
+async def _series_publisher(series_cv_id: str) -> tuple[str | None, int | None]:
+    from sqlalchemy import select
+
+    import pullbox.database as db_module
+    from pullbox.models import Series
+
+    async with db_module.AsyncSessionLocal() as db:
+        s = (
+            await db.execute(select(Series).where(Series.comicvine_id == series_cv_id))
+        ).scalar_one()
+        return s.publisher, s.start_year
+
+
+def test_refresh_week_enriches_publisher_via_volume_lookup(client):
+    """A new series gets its publisher (and start_year) from a per-volume lookup."""
+    from datetime import date
+
+    import pullbox.database as db_module
+    from pullbox.routers.releases import _refresh_week
+
+    fake_cv = AsyncMock()
+    fake_cv.get_weekly_releases.return_value = _weekly_payload()
+    fake_cv.get_volume.return_value = {"publisher": "Marvel Comics", "start_year": 2020}
+
+    async def _run():
+        async with db_module.AsyncSessionLocal() as db:
+            await _refresh_week(db, fake_cv, date(2025, 5, 5), date(2025, 5, 11))
+            await db.commit()
+
+    asyncio.run(_run())
+
+    assert asyncio.run(_series_publisher("vol-100")) == ("Marvel Comics", 2020)
+    fake_cv.get_volume.assert_awaited_once_with(metron_id=None, comicvine_id="vol-100")
+
+
+def test_refresh_week_skips_lookup_when_publisher_already_known(client):
+    """A series that already has a publisher is not re-fetched (steady-state = 0 lookups)."""
+    from datetime import date
+
+    import pullbox.database as db_module
+    from pullbox.models import Series
+    from pullbox.routers.releases import _refresh_week
+
+    async def _seed():
+        async with db_module.AsyncSessionLocal() as db:
+            db.add(Series(comicvine_id="vol-100", title="Series X", publisher="Image"))
+            await db.commit()
+
+    asyncio.run(_seed())
+
+    fake_cv = AsyncMock()
+    fake_cv.get_weekly_releases.return_value = _weekly_payload()
+
+    async def _run():
+        async with db_module.AsyncSessionLocal() as db:
+            await _refresh_week(db, fake_cv, date(2025, 5, 5), date(2025, 5, 11))
+            await db.commit()
+
+    asyncio.run(_run())
+
+    assert asyncio.run(_series_publisher("vol-100")) == ("Image", None)
+    fake_cv.get_volume.assert_not_awaited()
+
+
+def test_refresh_week_survives_volume_lookup_failure(client):
+    """A failed (or rate-limited) volume lookup leaves publisher None without aborting."""
+    from datetime import date
+
+    import pullbox.database as db_module
+    from pullbox.clients.comicvine import ComicVineRateLimitError
+    from pullbox.routers.releases import _refresh_week
+
+    fake_cv = AsyncMock()
+    fake_cv.get_weekly_releases.return_value = _weekly_payload()
+    fake_cv.get_volume.side_effect = ComicVineRateLimitError("budget exhausted")
+
+    async def _run():
+        async with db_module.AsyncSessionLocal() as db:
+            await _refresh_week(db, fake_cv, date(2025, 5, 5), date(2025, 5, 11))
+            await db.commit()
+
+    asyncio.run(_run())  # must not raise
+
+    # The release still landed; the series just has no publisher yet.
+    assert asyncio.run(_series_publisher("vol-100")) == (None, None)

@@ -7,12 +7,15 @@ from unittest.mock import AsyncMock
 import pytest
 from fastapi.testclient import TestClient
 
-from pullbox.deps import get_comicvine_client
+from pullbox.deps import get_metadata_provider
 from pullbox.main import app
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
+# Records are provider-normalized: every series/issue carries both ``metron_id``
+# (primary) and ``comicvine_id`` (cross-reference).
 
 FAKE_VOLUME = {
+    "metron_id": "m99001",
     "comicvine_id": "99001",
     "title": "Batman",
     "publisher": "DC Comics",
@@ -24,6 +27,7 @@ FAKE_VOLUME = {
 
 FAKE_SEARCH_RESULTS = [
     {
+        "metron_id": "m99001",
         "comicvine_id": "99001",
         "title": "Batman",
         "publisher": "DC Comics",
@@ -33,6 +37,7 @@ FAKE_SEARCH_RESULTS = [
         "issue_count": 3,
     },
     {
+        "metron_id": "m99002",
         "comicvine_id": "99002",
         "title": "Batman: Year One",
         "publisher": "DC Comics",
@@ -45,6 +50,7 @@ FAKE_SEARCH_RESULTS = [
 
 FAKE_ISSUES = [
     {
+        "metron_id": "m555001",
         "comicvine_id": "555001",
         "issue_number": "1",
         "title": "Issue One",
@@ -54,6 +60,7 @@ FAKE_ISSUES = [
         "description": None,
     },
     {
+        "metron_id": "m555002",
         "comicvine_id": "555002",
         "issue_number": "2",
         "title": "Issue Two",
@@ -63,6 +70,7 @@ FAKE_ISSUES = [
         "description": None,
     },
     {
+        "metron_id": "m555003",
         "comicvine_id": "555003",
         "issue_number": "3",
         "title": "Issue Three",
@@ -74,20 +82,27 @@ FAKE_ISSUES = [
 ]
 
 
-def _make_mock_cv(
+def _make_mock_provider(
     *,
     search_results=None,
     volume=None,
     issues=None,
 ):
-    """Return an async generator override for get_comicvine_client."""
+    """Return an async generator override for get_metadata_provider.
+
+    The provider is an AsyncMock; its id-based methods accept ``metron_id`` /
+    ``comicvine_id`` kwargs (ignored by the mock) and return the configured records.
+    """
     mock = AsyncMock()
     if search_results is not None:
         mock.search_series.return_value = search_results
-    if volume is not None:
-        mock.get_volume.return_value = volume
+    # sync-issues refreshes series metadata via get_volume, so default to a real
+    # dict when a test doesn't care about the volume specifically.
+    mock.get_volume.return_value = volume if volume is not None else FAKE_VOLUME
     if issues is not None:
         mock.get_issues.return_value = issues
+    # arc enrichment fires get_issue for every synced issue; return no arcs by default.
+    mock.get_issue.return_value = {"metron_id": None, "comicvine_id": None, "story_arcs": []}
 
     async def _override():
         yield mock
@@ -97,7 +112,7 @@ def _make_mock_cv(
 
 @pytest.fixture
 def client():
-    """Clean TestClient with no ComicVine override (use per-test overrides)."""
+    """Clean TestClient with no provider override (use per-test overrides)."""
     with TestClient(app) as c:
         yield c
 
@@ -123,7 +138,7 @@ def test_search_rejects_short_query(client):
 
 
 def test_search_returns_results_with_in_library(client):
-    app.dependency_overrides[get_comicvine_client] = _make_mock_cv(
+    app.dependency_overrides[get_metadata_provider] = _make_mock_provider(
         search_results=FAKE_SEARCH_RESULTS
     )
     try:
@@ -137,93 +152,99 @@ def test_search_returns_results_with_in_library(client):
         assert data[0]["in_library"] is False
         assert data[1]["in_library"] is False
     finally:
-        app.dependency_overrides.pop(get_comicvine_client, None)
+        app.dependency_overrides.pop(get_metadata_provider, None)
 
 
 def test_search_marks_existing_series_as_in_library(client):
     # First add a series so it exists in the DB
-    app.dependency_overrides[get_comicvine_client] = _make_mock_cv(
+    app.dependency_overrides[get_metadata_provider] = _make_mock_provider(
         volume=FAKE_VOLUME, issues=[]
     )
     try:
-        add_resp = client.post("/api/series/", json={"comicvine_id": "99001"})
+        add_resp = client.post("/api/series/", json={"metron_id": "m99001"})
         assert add_resp.status_code == 201
     finally:
-        app.dependency_overrides.pop(get_comicvine_client, None)
+        app.dependency_overrides.pop(get_metadata_provider, None)
 
-    # Now search — 99001 should be in_library=True
-    app.dependency_overrides[get_comicvine_client] = _make_mock_cv(
+    # Now search — m99001 should be in_library=True
+    app.dependency_overrides[get_metadata_provider] = _make_mock_provider(
         search_results=FAKE_SEARCH_RESULTS
     )
     try:
         resp = client.get("/api/series/search?q=Batman")
         assert resp.status_code == 200
         data = resp.json()
-        by_cv_id = {item["comicvine_id"]: item for item in data}
-        assert by_cv_id["99001"]["in_library"] is True
-        assert by_cv_id["99002"]["in_library"] is False
+        by_metron_id = {item["metron_id"]: item for item in data}
+        assert by_metron_id["m99001"]["in_library"] is True
+        assert by_metron_id["m99002"]["in_library"] is False
     finally:
-        app.dependency_overrides.pop(get_comicvine_client, None)
+        app.dependency_overrides.pop(get_metadata_provider, None)
 
 
 # ── Step 4.3 — Add series ─────────────────────────────────────────────────────
 
 
 def test_add_series_returns_201(client):
-    app.dependency_overrides[get_comicvine_client] = _make_mock_cv(volume=FAKE_VOLUME)
+    app.dependency_overrides[get_metadata_provider] = _make_mock_provider(volume=FAKE_VOLUME)
     try:
-        resp = client.post("/api/series/", json={"comicvine_id": "99001"})
+        resp = client.post("/api/series/", json={"metron_id": "m99001"})
         assert resp.status_code == 201
         data = resp.json()
         assert data["id"] is not None
         assert data["title"] == "Batman"
+        assert data["metron_id"] == "m99001"
         assert data["comicvine_id"] == "99001"
         assert data["subscribed"] is False
         assert data["auto_download"] is False
     finally:
-        app.dependency_overrides.pop(get_comicvine_client, None)
+        app.dependency_overrides.pop(get_metadata_provider, None)
+
+
+def test_add_series_requires_an_id(client):
+    resp = client.post("/api/series/", json={"subscribed": True})
+    assert resp.status_code == 422
 
 
 def test_add_series_respects_subscription_flag(client):
-    app.dependency_overrides[get_comicvine_client] = _make_mock_cv(volume=FAKE_VOLUME)
+    app.dependency_overrides[get_metadata_provider] = _make_mock_provider(volume=FAKE_VOLUME)
     try:
         resp = client.post(
-            "/api/series/", json={"comicvine_id": "99001", "subscribed": True}
+            "/api/series/", json={"metron_id": "m99001", "subscribed": True}
         )
         assert resp.status_code == 201
         assert resp.json()["subscribed"] is True
     finally:
-        app.dependency_overrides.pop(get_comicvine_client, None)
+        app.dependency_overrides.pop(get_metadata_provider, None)
 
 
 def test_add_series_409_on_duplicate(client):
-    app.dependency_overrides[get_comicvine_client] = _make_mock_cv(volume=FAKE_VOLUME)
+    app.dependency_overrides[get_metadata_provider] = _make_mock_provider(volume=FAKE_VOLUME)
     try:
-        r1 = client.post("/api/series/", json={"comicvine_id": "99001"})
+        r1 = client.post("/api/series/", json={"metron_id": "m99001"})
         assert r1.status_code == 201
-        r2 = client.post("/api/series/", json={"comicvine_id": "99001"})
+        r2 = client.post("/api/series/", json={"metron_id": "m99001"})
         assert r2.status_code == 409
     finally:
-        app.dependency_overrides.pop(get_comicvine_client, None)
+        app.dependency_overrides.pop(get_metadata_provider, None)
 
 
 # ── Step 4.4 — List and get series ───────────────────────────────────────────
 
 
-def _add_series(client, cv_id: str, title: str):
-    volume = {**FAKE_VOLUME, "comicvine_id": cv_id, "title": title}
-    app.dependency_overrides[get_comicvine_client] = _make_mock_cv(volume=volume)
+def _add_series(client, metron_id: str, title: str):
+    volume = {**FAKE_VOLUME, "metron_id": metron_id, "comicvine_id": None, "title": title}
+    app.dependency_overrides[get_metadata_provider] = _make_mock_provider(volume=volume)
     try:
-        resp = client.post("/api/series/", json={"comicvine_id": cv_id})
+        resp = client.post("/api/series/", json={"metron_id": metron_id})
         assert resp.status_code == 201
         return resp.json()
     finally:
-        app.dependency_overrides.pop(get_comicvine_client, None)
+        app.dependency_overrides.pop(get_metadata_provider, None)
 
 
 def test_list_series_returns_all(client):
-    _add_series(client, "99001", "Batman")
-    _add_series(client, "99002", "Superman")
+    _add_series(client, "m99001", "Batman")
+    _add_series(client, "m99002", "Superman")
 
     resp = client.get("/api/series/")
     assert resp.status_code == 200
@@ -235,8 +256,8 @@ def test_list_series_returns_all(client):
 
 
 def test_list_series_pagination(client):
-    _add_series(client, "99001", "Batman")
-    _add_series(client, "99002", "Superman")
+    _add_series(client, "m99001", "Batman")
+    _add_series(client, "m99002", "Superman")
 
     resp = client.get("/api/series/?page=1&per_page=1")
     assert resp.status_code == 200
@@ -251,9 +272,9 @@ def test_list_series_pagination(client):
 
 def test_list_series_ordered_alphabetically(client):
     # Insert out of alphabetical order; expect a case-insensitive A→Z result.
-    _add_series(client, "99003", "aquaman")
-    _add_series(client, "99001", "Batman")
-    _add_series(client, "99002", "Superman")
+    _add_series(client, "m99003", "aquaman")
+    _add_series(client, "m99001", "Batman")
+    _add_series(client, "m99002", "Superman")
 
     resp = client.get("/api/series/")
     assert resp.status_code == 200
@@ -263,7 +284,7 @@ def test_list_series_ordered_alphabetically(client):
 
 def test_list_series_all_ignores_pagination(client):
     for i in range(25):
-        _add_series(client, f"9900{i}", f"Series {i:02d}")
+        _add_series(client, f"m9900{i}", f"Series {i:02d}")
 
     # Default paging caps at 20 items…
     default = client.get("/api/series/").json()
@@ -278,7 +299,7 @@ def test_list_series_all_ignores_pagination(client):
 
 
 def test_get_series_returns_detail(client):
-    added = _add_series(client, "99001", "Batman")
+    added = _add_series(client, "m99001", "Batman")
     series_id = added["id"]
 
     resp = client.get(f"/api/series/{series_id}")
@@ -298,7 +319,7 @@ def test_get_series_404(client):
 
 
 def test_patch_series_subscribed(client):
-    added = _add_series(client, "99001", "Batman")
+    added = _add_series(client, "m99001", "Batman")
     series_id = added["id"]
 
     # Subscribe
@@ -324,10 +345,10 @@ def test_patch_series_404(client):
 
 
 def test_sync_issues_adds_on_first_call(client):
-    added = _add_series(client, "99001", "Batman")
+    added = _add_series(client, "m99001", "Batman")
     series_id = added["id"]
 
-    app.dependency_overrides[get_comicvine_client] = _make_mock_cv(issues=FAKE_ISSUES)
+    app.dependency_overrides[get_metadata_provider] = _make_mock_provider(issues=FAKE_ISSUES)
     try:
         resp = client.post(f"/api/series/{series_id}/sync-issues")
         assert resp.status_code == 200
@@ -336,14 +357,14 @@ def test_sync_issues_adds_on_first_call(client):
         assert data["updated"] == 0
         assert data["total"] == 3
     finally:
-        app.dependency_overrides.pop(get_comicvine_client, None)
+        app.dependency_overrides.pop(get_metadata_provider, None)
 
 
 def test_sync_issues_upserts_on_second_call(client):
-    added = _add_series(client, "99001", "Batman")
+    added = _add_series(client, "m99001", "Batman")
     series_id = added["id"]
 
-    app.dependency_overrides[get_comicvine_client] = _make_mock_cv(issues=FAKE_ISSUES)
+    app.dependency_overrides[get_metadata_provider] = _make_mock_provider(issues=FAKE_ISSUES)
     try:
         client.post(f"/api/series/{series_id}/sync-issues")
         resp = client.post(f"/api/series/{series_id}/sync-issues")
@@ -353,18 +374,43 @@ def test_sync_issues_upserts_on_second_call(client):
         assert data["updated"] == 3
         assert data["total"] == 3
     finally:
-        app.dependency_overrides.pop(get_comicvine_client, None)
+        app.dependency_overrides.pop(get_metadata_provider, None)
+
+
+def test_sync_issues_backfills_missing_series_cover(client):
+    # Simulate an imported series that landed without a cover image.
+    coverless = {**FAKE_VOLUME, "metron_id": "m99005", "comicvine_id": None, "cover_url": None}
+    app.dependency_overrides[get_metadata_provider] = _make_mock_provider(volume=coverless)
+    try:
+        added = client.post("/api/series/", json={"metron_id": "m99005"}).json()
+    finally:
+        app.dependency_overrides.pop(get_metadata_provider, None)
+    series_id = added["id"]
+    assert added["cover_url"] is None
+
+    # A sync should refresh the series and fill in the cover.
+    refreshed = {**FAKE_VOLUME, "metron_id": "m99005", "comicvine_id": None}
+    app.dependency_overrides[get_metadata_provider] = _make_mock_provider(
+        volume=refreshed, issues=FAKE_ISSUES
+    )
+    try:
+        assert client.post(f"/api/series/{series_id}/sync-issues").status_code == 200
+    finally:
+        app.dependency_overrides.pop(get_metadata_provider, None)
+
+    detail = client.get(f"/api/series/{series_id}").json()
+    assert detail["cover_url"] == FAKE_VOLUME["cover_url"]
 
 
 def test_sync_issues_does_not_overwrite_status(client):
-    added = _add_series(client, "99001", "Batman")
+    added = _add_series(client, "m99001", "Batman")
     series_id = added["id"]
 
-    app.dependency_overrides[get_comicvine_client] = _make_mock_cv(issues=FAKE_ISSUES)
+    app.dependency_overrides[get_metadata_provider] = _make_mock_provider(issues=FAKE_ISSUES)
     try:
         client.post(f"/api/series/{series_id}/sync-issues")
     finally:
-        app.dependency_overrides.pop(get_comicvine_client, None)
+        app.dependency_overrides.pop(get_metadata_provider, None)
 
     # Mark first issue as downloaded directly via the want endpoint
     issues_resp = client.get(f"/api/series/{series_id}/issues")
@@ -372,11 +418,11 @@ def test_sync_issues_does_not_overwrite_status(client):
     client.post(f"/api/issues/{issue_id}/want")
 
     # Sync again — status should NOT revert to "unknown"
-    app.dependency_overrides[get_comicvine_client] = _make_mock_cv(issues=FAKE_ISSUES)
+    app.dependency_overrides[get_metadata_provider] = _make_mock_provider(issues=FAKE_ISSUES)
     try:
         client.post(f"/api/series/{series_id}/sync-issues")
     finally:
-        app.dependency_overrides.pop(get_comicvine_client, None)
+        app.dependency_overrides.pop(get_metadata_provider, None)
 
     get_resp = client.get(f"/api/series/{series_id}/issues")
     first_issue = next(i for i in get_resp.json() if i["id"] == issue_id)
@@ -387,14 +433,14 @@ def test_sync_issues_does_not_overwrite_status(client):
 
 
 def test_list_issues_ordered_by_number(client):
-    added = _add_series(client, "99001", "Batman")
+    added = _add_series(client, "m99001", "Batman")
     series_id = added["id"]
 
-    app.dependency_overrides[get_comicvine_client] = _make_mock_cv(issues=FAKE_ISSUES)
+    app.dependency_overrides[get_metadata_provider] = _make_mock_provider(issues=FAKE_ISSUES)
     try:
         client.post(f"/api/series/{series_id}/sync-issues")
     finally:
-        app.dependency_overrides.pop(get_comicvine_client, None)
+        app.dependency_overrides.pop(get_metadata_provider, None)
 
     resp = client.get(f"/api/series/{series_id}/issues")
     assert resp.status_code == 200
@@ -403,14 +449,14 @@ def test_list_issues_ordered_by_number(client):
 
 
 def test_list_issues_status_filter(client):
-    added = _add_series(client, "99001", "Batman")
+    added = _add_series(client, "m99001", "Batman")
     series_id = added["id"]
 
-    app.dependency_overrides[get_comicvine_client] = _make_mock_cv(issues=FAKE_ISSUES)
+    app.dependency_overrides[get_metadata_provider] = _make_mock_provider(issues=FAKE_ISSUES)
     try:
         client.post(f"/api/series/{series_id}/sync-issues")
     finally:
-        app.dependency_overrides.pop(get_comicvine_client, None)
+        app.dependency_overrides.pop(get_metadata_provider, None)
 
     # No wanted issues yet
     resp = client.get(f"/api/series/{series_id}/issues?status=wanted")

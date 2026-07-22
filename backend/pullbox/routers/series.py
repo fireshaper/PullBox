@@ -7,10 +7,11 @@ import logging
 from datetime import date
 
 from fastapi import APIRouter, HTTPException, Query
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import selectinload
 
-from pullbox.deps import ComicVineClientDep, DbDep
+from pullbox.clients.metadata import ids_for
+from pullbox.deps import DbDep, MetadataProviderDep
 from pullbox.models import Issue, Series
 from pullbox.schemas import (
     AddSeriesRequest,
@@ -34,7 +35,7 @@ app_log = logging.getLogger("pullbox")
 
 
 def _parse_date(value: str | None) -> date | None:
-    """Parse a YYYY-MM-DD string (or None) returned by the ComicVine API."""
+    """Parse a YYYY-MM-DD string (or None) returned by the metadata API."""
     if not value:
         return None
     try:
@@ -50,28 +51,41 @@ async def _get_series_or_404(series_id: int, db) -> Series:
     return row
 
 
-# ── Step 4.2 — Search ComicVine ───────────────────────────────────────────────
+# ── Step 4.2 — Search the metadata provider ──────────────────────────────────
 
 
 @router.get("/search", response_model=list[SeriesSearchResult])
 async def search_series(
-    cv: ComicVineClientDep,
+    provider: MetadataProviderDep,
     db: DbDep,
     q: str = Query(min_length=2),
 ):
-    results = await cv.search_series(q)
+    results = await provider.search_series(q)
 
-    in_library_ids: set[str] = set()
-    if results:
-        cv_ids = [r["comicvine_id"] for r in results]
-        stmt = select(Series.comicvine_id).where(Series.comicvine_id.in_(cv_ids))
-        rows = (await db.execute(stmt)).scalars().all()
-        in_library_ids = set(rows)
+    # A result is already in the library if either of its ids matches a stored series.
+    metron_ids = [r["metron_id"] for r in results if r.get("metron_id")]
+    cv_ids = [r["comicvine_id"] for r in results if r.get("comicvine_id")]
+    have_metron: set[str] = set()
+    have_cv: set[str] = set()
+    if metron_ids:
+        have_metron = set(
+            (await db.execute(select(Series.metron_id).where(Series.metron_id.in_(metron_ids))))
+            .scalars()
+            .all()
+        )
+    if cv_ids:
+        have_cv = set(
+            (await db.execute(select(Series.comicvine_id).where(Series.comicvine_id.in_(cv_ids))))
+            .scalars()
+            .all()
+        )
 
-    return [
-        SeriesSearchResult(**r, in_library=r["comicvine_id"] in in_library_ids)
-        for r in results
-    ]
+    def _in_library(r: dict) -> bool:
+        return (r.get("metron_id") in have_metron and r.get("metron_id") is not None) or (
+            r.get("comicvine_id") in have_cv and r.get("comicvine_id") is not None
+        )
+
+    return [SeriesSearchResult(**r, in_library=_in_library(r)) for r in results]
 
 
 # ── Step 4.3 — Add series ─────────────────────────────────────────────────────
@@ -80,22 +94,26 @@ async def search_series(
 @router.post("/", response_model=SeriesDetailResponse, status_code=201)
 async def add_series(
     body: AddSeriesRequest,
-    cv: ComicVineClientDep,
+    provider: MetadataProviderDep,
     db: DbDep,
 ):
-    # Check duplicate
+    # Check duplicate on whichever id(s) the request carries.
+    dup_clauses = []
+    if body.metron_id:
+        dup_clauses.append(Series.metron_id == body.metron_id)
+    if body.comicvine_id:
+        dup_clauses.append(Series.comicvine_id == body.comicvine_id)
     existing = (
-        await db.execute(
-            select(Series).where(Series.comicvine_id == body.comicvine_id)
-        )
+        await db.execute(select(Series).where(or_(*dup_clauses)))
     ).scalar_one_or_none()
     if existing is not None:
         raise HTTPException(status_code=409, detail="Series already in library")
 
-    volume = await cv.get_volume(body.comicvine_id)
+    volume = await provider.get_volume(metron_id=body.metron_id, comicvine_id=body.comicvine_id)
 
     series = Series(
-        comicvine_id=volume["comicvine_id"],
+        metron_id=volume.get("metron_id"),
+        comicvine_id=volume.get("comicvine_id"),
         title=volume["title"],
         publisher=volume.get("publisher"),
         start_year=volume.get("start_year"),
@@ -108,8 +126,9 @@ async def add_series(
     await db.flush()
     await db.refresh(series)
     app_log.info(
-        "Added series to library: %r (ComicVine %s, subscribed=%s, auto_download=%s)",
+        "Added series to library: %r (metron=%s cv=%s, subscribed=%s, auto_download=%s)",
         series.title,
+        series.metron_id,
         series.comicvine_id,
         series.subscribed,
         series.auto_download,
@@ -171,19 +190,22 @@ async def get_series(series_id: int, db: DbDep):
 
 
 @router.post("/{series_id}/enrich", response_model=SeriesDetailResponse)
-async def enrich_series(series_id: int, cv: ComicVineClientDep, db: DbDep):
-    """Fetch full metadata from ComicVine and update the series record.
+async def enrich_series(series_id: int, provider: MetadataProviderDep, db: DbDep):
+    """Fetch full metadata from the provider and update the series record.
 
     Safe to call repeatedly — only overwrites metadata fields, never touches
     subscribed/auto_download/status or any issue rows.
     """
     series = await _get_series_or_404(series_id, db)
-    volume = await cv.get_volume(series.comicvine_id)
+    volume = await provider.get_volume(**ids_for(series))
     series.title = volume["title"]
     series.publisher = volume.get("publisher")
     series.start_year = volume.get("start_year")
     series.cover_url = volume.get("cover_url")
     series.description = volume.get("description")
+    # Backfill a missing cross-reference id if the provider now supplies one.
+    series.comicvine_id = series.comicvine_id or volume.get("comicvine_id")
+    series.metron_id = series.metron_id or volume.get("metron_id")
     await db.flush()
     await db.refresh(series)
     return SeriesDetailResponse.model_validate(series)
@@ -210,42 +232,72 @@ async def update_series(series_id: int, body: UpdateSeriesRequest, db: DbDep):
 
 
 @router.post("/{series_id}/sync-issues", response_model=SyncIssuesResponse)
-async def sync_issues(series_id: int, cv: ComicVineClientDep, db: DbDep):
+async def sync_issues(series_id: int, provider: MetadataProviderDep, db: DbDep):
     series = await _get_series_or_404(series_id, db)
 
-    remote_issues = await cv.get_issues(series.comicvine_id)
+    # Refresh series-level metadata (notably the cover image) alongside the issue
+    # list. Imported series can land without a cover_url — an exact match from
+    # search doesn't always carry the volume image — so a sync doubles as the fix
+    # for a missing series cover. `or`-guards avoid clobbering existing values with
+    # a null from the API.
+    volume, remote_issues = await asyncio.gather(
+        provider.get_volume(**ids_for(series)),
+        provider.get_issues(**ids_for(series)),
+    )
+    series.title = volume.get("title") or series.title
+    series.publisher = volume.get("publisher") or series.publisher
+    if volume.get("start_year") is not None:
+        series.start_year = volume.get("start_year")
+    series.cover_url = volume.get("cover_url") or series.cover_url
+    series.description = volume.get("description") or series.description
 
-    # Load all existing issues for this series indexed by comicvine_id
+    # Load all existing issues for this series, indexed by each metadata id.
     existing_rows = (
         await db.execute(select(Issue).where(Issue.series_id == series_id))
     ).scalars().all()
+    existing_by_metron: dict[str, Issue] = {
+        i.metron_id: i for i in existing_rows if i.metron_id is not None
+    }
     existing_by_cv_id: dict[str, Issue] = {
         i.comicvine_id: i for i in existing_rows if i.comicvine_id is not None
     }
-    # Import-origin issues not yet backfilled (comicvine_id NULL): match these by
+    # Import-origin issues not yet backfilled (no metadata id): match these by
     # normalized issue number so a sync enriches them in place instead of creating
     # a duplicate row.
     unbackfilled_by_number: dict[str, Issue] = {}
     for i in existing_rows:
-        if i.comicvine_id is None:
+        if i.metron_id is None and i.comicvine_id is None:
             unbackfilled_by_number.setdefault(normalize_issue_number(i.issue_number), i)
 
     added = 0
     updated = 0
     new_issues: list[Issue] = []
 
+    def _adopt_ids(issue: Issue, remote: dict) -> None:
+        if remote.get("metron_id"):
+            issue.metron_id = remote["metron_id"]
+            existing_by_metron[remote["metron_id"]] = issue
+        if remote.get("comicvine_id"):
+            issue.comicvine_id = remote["comicvine_id"]
+            existing_by_cv_id[remote["comicvine_id"]] = issue
+
     for remote in remote_issues:
-        cv_id = remote["comicvine_id"]
+        metron_id = remote.get("metron_id")
+        cv_id = remote.get("comicvine_id")
         cover_date = _parse_date(remote.get("cover_date"))
         store_date = _parse_date(remote.get("store_date"))
 
-        issue = existing_by_cv_id.get(cv_id)
+        issue = None
+        if metron_id:
+            issue = existing_by_metron.get(metron_id)
+        if issue is None and cv_id:
+            issue = existing_by_cv_id.get(cv_id)
         if issue is None:
             issue = unbackfilled_by_number.pop(
                 normalize_issue_number(remote.get("issue_number", "")), None
             )
             if issue is not None:
-                issue.comicvine_id = cv_id  # adopt the un-backfilled local issue
+                _adopt_ids(issue, remote)  # adopt the un-backfilled local issue
 
         if issue is not None:
             # Refresh metadata only — never touch status or file_path
@@ -255,11 +307,12 @@ async def sync_issues(series_id: int, cv: ComicVineClientDep, db: DbDep):
             issue.store_date = store_date
             issue.cover_url = remote.get("cover_url", issue.cover_url)
             issue.description = remote.get("description", issue.description)
-            existing_by_cv_id[cv_id] = issue
+            _adopt_ids(issue, remote)
             updated += 1
         else:
             issue = Issue(
                 series_id=series_id,
+                metron_id=metron_id,
                 comicvine_id=cv_id,
                 issue_number=remote.get("issue_number", ""),
                 title=remote.get("title"),
@@ -285,8 +338,8 @@ async def sync_issues(series_id: int, cv: ComicVineClientDep, db: DbDep):
     # Enrich story arc membership for every issue not yet enriched (all issues on
     # first sync, only new issues thereafter). Failures are non-fatal and retried
     # on the next sync. See services/arcs.py.
-    all_issues = list(existing_by_cv_id.values()) + new_issues
-    await enrich_issue_arcs(db, cv, all_issues)
+    all_issues = list({id(i): i for i in existing_rows + new_issues}.values())
+    await enrich_issue_arcs(db, provider, all_issues)
 
     if series.auto_download and new_issues:
         new_job_ids: list[int] = []

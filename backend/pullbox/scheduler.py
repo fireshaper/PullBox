@@ -118,17 +118,17 @@ def _parse_date_str(value: object) -> date | None:
 
 
 async def nightly_calendar_refresh() -> dict:
-    """Refresh weekly release calendar from ComicVine.
+    """Refresh weekly release calendar from the metadata provider.
 
     Fetches releases for the current ISO week plus pull_list_lookahead_weeks weeks ahead.
     For each release: find-or-create Series and Issue rows, then upsert WeeklyRelease.
     Never overwrites Issue.status on existing issues.
     """
-    from sqlalchemy import select
+    from sqlalchemy import or_, select
 
     import pullbox.database as db_module
     import pullbox.deps as deps_module
-    from pullbox.clients.comicvine import ComicVineClient  # noqa: PLC0415
+    from pullbox.clients.metadata import PROVIDER_ERRORS, ids_for  # noqa: PLC0415
     from pullbox.models import Issue, Series, WeeklyRelease  # noqa: PLC0415
 
     logger.info("nightly_calendar_refresh: starting")
@@ -139,8 +139,8 @@ async def nightly_calendar_refresh() -> dict:
 
     settings = deps_module.get_settings()
 
-    if not settings.comicvine_api_key:
-        logger.warning("nightly_calendar_refresh: no ComicVine API key configured, skipping run")
+    if not settings.metadata_configured:
+        logger.warning("nightly_calendar_refresh: no metadata source configured, skipping run")
         return {}
 
     today = date.today()
@@ -152,8 +152,11 @@ async def nightly_calendar_refresh() -> dict:
     new_series_count = 0
     new_issues_count = 0
     releases_upserted = 0
+    # Series (by local id) already attempted for publisher enrichment this run, so we
+    # do at most one lookup per series across all weeks.
+    enriched_attempted: set[int] = set()
 
-    client = ComicVineClient(api_key=settings.comicvine_api_key)
+    client = deps_module.build_metadata_provider(settings)
     try:
         for week_monday, week_sunday in weeks:
             start_str = week_monday.isoformat()
@@ -163,7 +166,7 @@ async def nightly_calendar_refresh() -> dict:
                 releases = await client.get_weekly_releases(start_str, end_str)
             except Exception:
                 logger.warning(
-                    "nightly_calendar_refresh: ComicVine fetch failed for %s–%s",
+                    "nightly_calendar_refresh: provider fetch failed for %s–%s",
                     start_str,
                     end_str,
                     exc_info=True,
@@ -178,35 +181,75 @@ async def nightly_calendar_refresh() -> dict:
                             run_job_now,
                         )
 
-                        series_cv_id = str(release_data["series"]["comicvine_id"])
+                        series_ids = ids_for(release_data["series"])
 
-                        # Find or create Series
-                        result = await db.execute(
-                            select(Series).where(Series.comicvine_id == series_cv_id)
+                        # Find or create Series (match on either metadata id)
+                        series_clauses = []
+                        if series_ids.get("metron_id"):
+                            series_clauses.append(Series.metron_id == series_ids["metron_id"])
+                        if series_ids.get("comicvine_id"):
+                            series_clauses.append(
+                                Series.comicvine_id == series_ids["comicvine_id"]
+                            )
+                        series = (
+                            (await db.execute(select(Series).where(or_(*series_clauses))))
+                            .scalar_one_or_none()
+                            if series_clauses
+                            else None
                         )
-                        series = result.scalar_one_or_none()
                         if series is None:
                             series = Series(
-                                comicvine_id=series_cv_id,
+                                metron_id=series_ids.get("metron_id"),
+                                comicvine_id=series_ids.get("comicvine_id"),
                                 title=release_data["series"].get("title", "Unknown Series"),
                             )
                             db.add(series)
                             await db.flush()
                             new_series_count += 1
 
-                        issue_cv_id = str(release_data["comicvine_id"])
+                        # The weekly-issues endpoint carries no publisher, so fill it
+                        # from a per-series lookup — once per series per run. Failures
+                        # are non-fatal; the page-load path retries later.
+                        if series.publisher is None and series.id not in enriched_attempted:
+                            enriched_attempted.add(series.id)
+                            try:
+                                volume = await client.get_volume(**ids_for(series))
+                            except PROVIDER_ERRORS:
+                                logger.debug(
+                                    "nightly_calendar_refresh: publisher enrich "
+                                    "failed for series %s",
+                                    series.id,
+                                    exc_info=True,
+                                )
+                            else:
+                                series.publisher = volume.get("publisher")
+                                if (
+                                    series.start_year is None
+                                    and volume.get("start_year") is not None
+                                ):
+                                    series.start_year = volume["start_year"]
+
+                        issue_ids = ids_for(release_data)
 
                         # Find or create Issue (never overwrite status)
-                        result = await db.execute(
-                            select(Issue).where(Issue.comicvine_id == issue_cv_id)
+                        issue_clauses = []
+                        if issue_ids.get("metron_id"):
+                            issue_clauses.append(Issue.metron_id == issue_ids["metron_id"])
+                        if issue_ids.get("comicvine_id"):
+                            issue_clauses.append(Issue.comicvine_id == issue_ids["comicvine_id"])
+                        issue = (
+                            (await db.execute(select(Issue).where(or_(*issue_clauses))))
+                            .scalar_one_or_none()
+                            if issue_clauses
+                            else None
                         )
-                        issue = result.scalar_one_or_none()
                         new_issue = False
                         if issue is None:
                             store_date = _parse_date_str(release_data.get("store_date"))
                             issue = Issue(
                                 series_id=series.id,
-                                comicvine_id=issue_cv_id,
+                                metron_id=issue_ids.get("metron_id"),
+                                comicvine_id=issue_ids.get("comicvine_id"),
                                 issue_number=str(release_data.get("issue_number", "")),
                                 title=release_data.get("title"),
                                 store_date=store_date,
@@ -229,6 +272,7 @@ async def nightly_calendar_refresh() -> dict:
 
                         # Determine release date: prefer issue's store_date, fall back to week start
                         release_date = issue.store_date or week_monday
+                        source = "metron" if issue_ids.get("metron_id") else "comicvine"
 
                         # Upsert WeeklyRelease
                         result = await db.execute(
@@ -243,7 +287,7 @@ async def nightly_calendar_refresh() -> dict:
                                 WeeklyRelease(
                                     issue_id=issue.id,
                                     release_date=release_date,
-                                    source="comicvine",
+                                    source=source,
                                 )
                             )
                             releases_upserted += 1
@@ -254,7 +298,7 @@ async def nightly_calendar_refresh() -> dict:
                     except Exception:
                         logger.warning(
                             "nightly_calendar_refresh: error processing release %s",
-                            release_data.get("comicvine_id"),
+                            release_data.get("metron_id") or release_data.get("comicvine_id"),
                             exc_info=True,
                         )
                         await db.rollback()
@@ -472,22 +516,19 @@ async def poll_download_clients() -> None:
 
 
 async def sync_imported_issues() -> None:
-    """Backfill ComicVine metadata for imported issues, in throttled batches.
+    """Backfill metadata for imported issues, in throttled batches.
 
     Runs on an interval. Each run samples up to ``import_sync_batch_size`` pending
     tracking rows (oldest first), then fully syncs every series those rows belong
-    to — one volume fetch each — so large volumes aren't re-fetched every run. Stops
-    early if ComicVine throttles us; the shared client rate limiter keeps us under
-    the hourly cap and the job resumes on the next interval.
+    to — one series fetch each — so large series aren't re-fetched every run. Stops
+    early if the provider throttles us; the shared client rate limiters keep us under
+    each cap and the job resumes on the next interval.
     """
     from sqlalchemy import select
 
     import pullbox.database as db_module
     import pullbox.deps as deps_module
-    from pullbox.clients.comicvine import (  # noqa: PLC0415
-        ComicVineClient,
-        ComicVineRateLimitError,
-    )
+    from pullbox.clients.metadata import RATE_LIMIT_ERRORS  # noqa: PLC0415
     from pullbox.models import ImportFile, Series  # noqa: PLC0415
     from pullbox.services import sync_status as sync_svc  # noqa: PLC0415
     from pullbox.services.import_sync import resolve_series_for_import  # noqa: PLC0415
@@ -507,8 +548,8 @@ async def sync_imported_issues() -> None:
         return
 
     settings = deps_module.get_settings()
-    if not settings.comicvine_api_key:
-        return  # without a key the issues stay pending until one is configured
+    if not settings.metadata_configured:
+        return  # without a source the issues stay pending until one is configured
 
     # Sample a batch of pending tracking rows (oldest first) and take their series.
     async with db_module.AsyncSessionLocal() as db:
@@ -525,7 +566,7 @@ async def sync_imported_issues() -> None:
     if not series_ids:
         return
 
-    client = ComicVineClient(api_key=settings.comicvine_api_key)
+    client = deps_module.build_metadata_provider(settings)
     total_synced = 0
     try:
         for series_id in series_ids:
@@ -549,12 +590,12 @@ async def sync_imported_issues() -> None:
                     )
                     await db.commit()
                     total_synced += synced
-                except ComicVineRateLimitError as exc:
+                except RATE_LIMIT_ERRORS as exc:
                     await db.rollback()
                     logger.warning(
                         "sync_imported_issues: rate limited, pausing until next run (%s)", exc
                     )
-                    await _record(False, f"Rate limited by ComicVine ({exc})")
+                    await _record(False, f"Rate limited by metadata provider ({exc})")
                     return
                 except Exception:
                     await db.rollback()

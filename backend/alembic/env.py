@@ -1,7 +1,6 @@
-import asyncio
 from logging.config import fileConfig
 
-from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy import create_engine
 
 from alembic import context
 from pullbox.config import Settings
@@ -15,27 +14,30 @@ if config.config_file_name is not None:
 target_metadata = Base.metadata
 
 
-def do_run_migrations(connection):
-    context.configure(connection=connection, target_metadata=target_metadata)
-    with context.begin_transaction():
-        context.run_migrations()
+def _sync_database_url() -> str:
+    """Return a synchronous SQLAlchemy URL for migrations.
 
-
-async def run_async_migrations():
-    # Create a fresh engine from Settings for each migration run.
-    # This avoids sharing the app's singleton engine across event loops,
-    # which is unsafe with SQLAlchemy async when migrations run in a thread.
-    settings = Settings()
-    engine = create_async_engine(settings.database_url)
-    try:
-        async with engine.connect() as conn:
-            await conn.run_sync(do_run_migrations)
-    finally:
-        await engine.dispose()
+    Alembic only runs plain DDL, so it has no need for the app's async driver.
+    Using the async driver here was actively harmful: the app runs migrations in a
+    worker thread (``asyncio.to_thread`` in the lifespan) whose env.py then did a
+    *nested* ``asyncio.run``. On some platforms aiosqlite's own worker thread cannot
+    coordinate with that nested event loop and the first query deadlocks — startup
+    hangs forever right after "Will assume non-transactional DDL". Stripping the
+    async driver (``sqlite+aiosqlite`` → ``sqlite``) runs migrations synchronously
+    on the stdlib sqlite3 driver, sidestepping asyncio/threads entirely.
+    """
+    return Settings().database_url.replace("+aiosqlite", "")
 
 
 def run_migrations_online():
-    asyncio.run(run_async_migrations())
+    engine = create_engine(_sync_database_url())
+    try:
+        with engine.connect() as connection:
+            context.configure(connection=connection, target_metadata=target_metadata)
+            with context.begin_transaction():
+                context.run_migrations()
+    finally:
+        engine.dispose()
 
 
 if context.is_offline_mode():

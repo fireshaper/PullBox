@@ -15,7 +15,8 @@ import { ApiError, get, patch, post } from '../../../api/client'
 
 type SeriesDetail = {
   id: number
-  comicvine_id: string
+  metron_id: string | null
+  comicvine_id: string | null
   title: string
   publisher: string | null
   start_year: number | null
@@ -29,7 +30,8 @@ type SeriesDetail = {
 
 type ArcSummary = {
   id: number
-  comicvine_id: string
+  metron_id: string | null
+  comicvine_id: string | null
   name: string
 }
 
@@ -45,7 +47,8 @@ type Issue = {
 }
 
 type ArcMember = {
-  comicvine_id: string
+  metron_id: string | null
+  comicvine_id: string | null
   name: string | null
   site_detail_url: string | null
   in_library: boolean
@@ -58,7 +61,8 @@ type ArcMember = {
 
 type ArcDetail = {
   id: number
-  comicvine_id: string
+  metron_id: string | null
+  comicvine_id: string | null
   name: string
   publisher: string | null
   cover_url: string | null
@@ -300,8 +304,12 @@ function ArcPanel({ issueId, seriesId }: { issueId: number; seriesId: number }) 
           </div>
           {arc.issues.length > 0 ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-              {arc.issues.map((m) => (
-                <ArcMemberRow key={m.comicvine_id} member={m} onNavigate={goToSeries} />
+              {arc.issues.map((m, idx) => (
+                <ArcMemberRow
+                  key={m.metron_id ?? m.comicvine_id ?? idx}
+                  member={m}
+                  onNavigate={goToSeries}
+                />
               ))}
             </div>
           ) : (

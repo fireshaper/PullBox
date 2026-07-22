@@ -5,7 +5,7 @@ import logging
 
 from fastapi import APIRouter, HTTPException
 
-from pullbox.deps import ComicVineClientDep, DbDep
+from pullbox.deps import DbDep, MetadataProviderDep
 from pullbox.models import Issue
 from pullbox.schemas import IssueResponse, StoryArcDetail
 from pullbox.services.arcs import get_issue_arc_detail
@@ -72,11 +72,11 @@ async def mark_skipped(issue_id: int, db: DbDep):
 
 
 @router.get("/{issue_id}/arcs", response_model=list[StoryArcDetail])
-async def issue_arcs(issue_id: int, cv: ComicVineClientDep, db: DbDep):
+async def issue_arcs(issue_id: int, provider: MetadataProviderDep, db: DbDep):
     """Every story arc this issue belongs to, each with its full member list.
 
     Enriches the issue on demand, then fetches each arc's cross-series issue list
-    live from ComicVine, annotating members that exist in the local library.
+    live from the metadata provider, annotating members in the local library.
     """
     issue = await _get_issue_or_404(issue_id, db)
-    return await get_issue_arc_detail(db, cv, issue)
+    return await get_issue_arc_detail(db, provider, issue)

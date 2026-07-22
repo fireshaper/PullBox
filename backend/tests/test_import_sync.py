@@ -182,6 +182,61 @@ async def test_backfill_enriches_owned_issues_and_stamps_synced(db_session):
     assert cv.get_issue.await_count == 0
 
 
+async def test_backfill_merges_into_existing_series_on_duplicate_cv_id(db_session):
+    """When the matched volume already exists as another series, merge into it
+    instead of crashing on series.comicvine_id's UNIQUE constraint."""
+    from pullbox.models import ImportFile, Issue, Series
+    from pullbox.services.import_sync import resolve_series_for_import
+
+    # Existing series (e.g. from the pull list) already owns CV volume 167340,
+    # with issue #1 already carrying its CV id.
+    existing = Series(comicvine_id="167340", title="Absolute Batman", start_year=2025)
+    db_session.add(existing)
+    await db_session.flush()
+    db_session.add(
+        Issue(series_id=existing.id, comicvine_id="9001", issue_number="1", status="wanted")
+    )
+    await db_session.flush()
+
+    # Import-origin duplicate of the same book, with two owned files.
+    src, rows = await _seed_import(db_session, "Absolute Batman", 2025, ["1", "2"])
+    src_id = src.id
+
+    cv = AsyncMock()
+    cv.search_series.return_value = [
+        {"comicvine_id": "167340", "title": "Absolute Batman", "publisher": "DC Comics",
+         "start_year": 2025, "cover_url": None, "description": None, "issue_count": 2},
+    ]
+    cv.get_issues.return_value = [
+        {"comicvine_id": "9001", "issue_number": "1", "title": "One", "cover_date": None,
+         "store_date": None, "cover_url": None, "description": None},
+        {"comicvine_id": "9002", "issue_number": "2", "title": "Two", "cover_date": None,
+         "store_date": None, "cover_url": None, "description": None},
+    ]
+
+    synced, unmatched, no_match = await resolve_series_for_import(db_session, cv, src, rows)
+    # Both owned issues matched a remote issue → synced; nothing crashed.
+    assert (synced, unmatched, no_match) == (2, 0, 0)
+
+    # The import-origin series was consolidated away.
+    assert (await db_session.get(Series, src_id)) is None
+
+    # Both imported issues now live under the existing series, with files intact.
+    moved = (
+        await db_session.execute(select(Issue).where(Issue.series_id == existing.id))
+    ).scalars().all()
+    by_num = {i.issue_number: i for i in moved}
+    assert by_num["1"].file_path == "/c/Absolute Batman-1.cbz"
+    assert by_num["2"].file_path == "/c/Absolute Batman-2.cbz"
+    # #2's CV id was free → assigned; #1's (9001) was already taken → left null, no clash.
+    assert by_num["2"].comicvine_id == "9002"
+    assert by_num["1"].comicvine_id is None
+
+    # Tracking rows are terminal and now point at the surviving series.
+    tracking = (await db_session.execute(select(ImportFile))).scalars().all()
+    assert all(t.status == "synced" and t.series_id == existing.id for t in tracking)
+
+
 async def test_backfill_no_comicvine_match_marks_no_match(db_session):
     from pullbox.models import ImportFile
     from pullbox.services.import_sync import resolve_series_for_import

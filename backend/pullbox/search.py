@@ -63,7 +63,9 @@ async def fan_out_search(
     series: Series,
     indexers: list[Indexer],
 ) -> list[SearchResult]:
+    from pullbox.clients.jackett import JackettClient
     from pullbox.clients.newznab import NewznabClient
+    from pullbox.clients.prowlarr import ProwlarrClient
 
     enabled = sorted(
         (idx for idx in indexers if idx.enabled),
@@ -88,9 +90,23 @@ async def fan_out_search(
 
     tasks = []
     for idx in enabled:
+        client: NewznabClient | ProwlarrClient | JackettClient | None
         if idx.type in ("newznab", "nzbhydra2"):
-            logger.info("fan_out_search: queuing %d queries on indexer %r (type=%s)", len(queries), idx.name, idx.type)
             client = NewznabClient(idx)
+        elif idx.type == "prowlarr":
+            client = ProwlarrClient(idx)
+        elif idx.type == "jackett":
+            client = JackettClient(idx)
+        else:
+            client = None
+
+        if client is not None:
+            logger.info(
+                "fan_out_search: queuing %d queries on indexer %r (type=%s)",
+                len(queries),
+                idx.name,
+                idx.type,
+            )
             for query in queries:
                 tasks.append(client.search(query))
         else:

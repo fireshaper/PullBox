@@ -1,13 +1,15 @@
 from datetime import date, datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 
 class SeriesResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
-    # NULL for import-origin series not yet matched to a ComicVine volume.
+    # Primary metadata id (Metron). NULL for import-origin series not yet matched.
+    metron_id: str | None
+    # ComicVine cross-reference / id. NULL when unknown.
     comicvine_id: str | None
     title: str
     publisher: str | None
@@ -28,7 +30,9 @@ class IssueResponse(BaseModel):
 
     id: int
     series_id: int
-    # NULL for import-origin issues not yet synced with ComicVine.
+    # Primary metadata id (Metron). NULL for import-origin issues not yet synced.
+    metron_id: str | None
+    # ComicVine cross-reference / id. NULL when unknown.
     comicvine_id: str | None
     issue_number: str
     title: str | None
@@ -50,7 +54,8 @@ class StoryArcSummary(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
-    comicvine_id: str
+    metron_id: str | None
+    comicvine_id: str | None
     name: str
 
 
@@ -63,12 +68,13 @@ class IssueListItem(IssueResponse):
 class ArcMemberIssue(BaseModel):
     """A single issue within a story arc's cross-series member list.
 
-    ComicVine only supplies id/name/site_detail_url for arc members, so issues
-    outside the local library have no issue number or series. Members matched to
-    the local library are hydrated with `local_*` fields for internal linking.
+    The metadata source only supplies id/name/site_detail_url for arc members, so
+    issues outside the local library have no issue number or series. Members matched
+    to the local library are hydrated with `local_*` fields for internal linking.
     """
 
-    comicvine_id: str
+    metron_id: str | None = None
+    comicvine_id: str | None = None
     name: str | None
     site_detail_url: str | None
     in_library: bool
@@ -83,7 +89,8 @@ class StoryArcDetail(BaseModel):
     """A story arc plus its full member issue list, for the expandable panel."""
 
     id: int
-    comicvine_id: str
+    metron_id: str | None
+    comicvine_id: str | None
     name: str
     publisher: str | None
     cover_url: str | None
@@ -100,7 +107,8 @@ class PaginatedSeriesResponse(BaseModel):
 
 
 class SeriesSearchResult(BaseModel):
-    comicvine_id: str
+    metron_id: str | None = None
+    comicvine_id: str | None = None
     title: str
     publisher: str | None
     start_year: int | None
@@ -111,9 +119,17 @@ class SeriesSearchResult(BaseModel):
 
 
 class AddSeriesRequest(BaseModel):
-    comicvine_id: str
+    # A search result carries whichever id its source provided. Exactly one is required.
+    metron_id: str | None = None
+    comicvine_id: str | None = None
     subscribed: bool = False
     auto_download: bool = False
+
+    @model_validator(mode="after")
+    def _require_one_id(self) -> "AddSeriesRequest":
+        if not self.metron_id and not self.comicvine_id:
+            raise ValueError("one of metron_id or comicvine_id is required")
+        return self
 
 
 class UpdateSeriesRequest(BaseModel):
@@ -171,6 +187,14 @@ class IndexerResponse(BaseModel):
     last_test_success: bool | None
     created_at: datetime
     updated_at: datetime
+
+
+class IndexerTestRequest(BaseModel):
+    """Ad-hoc indexer config to test before it has been saved."""
+
+    type: str
+    url: str
+    api_key: str | None = None
 
 
 class IndexerTestResponse(BaseModel):
@@ -276,6 +300,17 @@ class DownloadClientResponse(BaseModel):
     last_test_success: bool | None
     created_at: datetime
     updated_at: datetime
+
+
+class DownloadClientTestRequest(BaseModel):
+    """Ad-hoc download-client config to test before it has been saved."""
+
+    type: str
+    host: str
+    port: int
+    username: str | None = None
+    password: str | None = None
+    api_key: str | None = None
 
 
 class DownloadClientTestResponse(BaseModel):

@@ -31,7 +31,11 @@ class Series(Base):
     __tablename__ = "series"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    # NULL for import-origin series that haven't been matched to a ComicVine volume yet.
+    # Primary metadata identity (Metron series id). NULL for import-origin series not
+    # yet matched to a Metron series.
+    metron_id: Mapped[str | None] = mapped_column(String, unique=True, nullable=True)
+    # ComicVine cross-reference (Metron exposes it as cv_id; also the id when ComicVine
+    # is the source). NULL when unknown.
     comicvine_id: Mapped[str | None] = mapped_column(String, unique=True, nullable=True)
     title: Mapped[str] = mapped_column(String, nullable=False)
     publisher: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -51,7 +55,10 @@ class Issue(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     series_id: Mapped[int] = mapped_column(Integer, ForeignKey("series.id"), nullable=False)
-    # NULL for import-origin issues that haven't been synced with ComicVine yet.
+    # Primary metadata identity (Metron issue id). NULL for import-origin issues not
+    # yet synced with a metadata source.
+    metron_id: Mapped[str | None] = mapped_column(String, unique=True, nullable=True)
+    # ComicVine cross-reference / id. NULL when unknown.
     comicvine_id: Mapped[str | None] = mapped_column(String, unique=True, nullable=True)
     issue_number: Mapped[str] = mapped_column(String, nullable=False)
     title: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -235,7 +242,10 @@ class StoryArc(Base):
     __tablename__ = "story_arcs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    comicvine_id: Mapped[str] = mapped_column(String, unique=True, nullable=False)
+    # Primary metadata identity (Metron arc id). Nullable so Metron-origin arcs
+    # without a ComicVine cross-reference remain valid.
+    metron_id: Mapped[str | None] = mapped_column(String, unique=True, nullable=True)
+    comicvine_id: Mapped[str | None] = mapped_column(String, unique=True, nullable=True)
     name: Mapped[str] = mapped_column(String, nullable=False)
     publisher: Mapped[str | None] = mapped_column(String, nullable=True)
     cover_url: Mapped[str | None] = mapped_column(String, nullable=True)

@@ -1,8 +1,9 @@
 import { createFileRoute } from '@tanstack/react-router'
+import type { ReactNode } from 'react'
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { CheckCircle, XCircle } from 'lucide-react'
-import { del, get, post } from '../../../api/client'
+import { del, get, patch, post } from '../../../api/client'
 import {
   Dialog,
   DialogContent,
@@ -91,6 +92,9 @@ const TYPE_LABELS: Record<string, string> = {
   sabnzbd: 'SABnzbd',
   qbittorrent: 'qBittorrent',
 }
+
+// Client types that support a connection test
+const TESTABLE_TYPES = ['nzbget', 'sabnzbd', 'qbittorrent']
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -185,38 +189,85 @@ function DeleteButton({ clientId }: { clientId: number }) {
   )
 }
 
-function AddClientDialog({ onAdded }: { onAdded: () => void }) {
+function formFromClient(dc: DownloadClient): AddForm {
+  return {
+    name: dc.name,
+    type: dc.type,
+    host: dc.host,
+    port: dc.port,
+    username: dc.username ?? '',
+    password: dc.password ?? '',
+    api_key: dc.api_key ?? '',
+    category: dc.category,
+    enabled: dc.enabled,
+  }
+}
+
+function ClientFormDialog({
+  client,
+  trigger,
+  onSaved,
+}: {
+  client?: DownloadClient
+  trigger: ReactNode
+  onSaved: () => void
+}) {
+  const isEdit = client !== undefined
+  const initialForm = isEdit ? formFromClient(client) : EMPTY_FORM
   const [open, setOpen] = useState(false)
-  const [form, setForm] = useState<AddForm>(EMPTY_FORM)
+  const [form, setForm] = useState<AddForm>(initialForm)
 
   const { mutate, isPending, error, reset } = useMutation({
-    mutationFn: () =>
-      post('/download-clients/', {
+    mutationFn: () => {
+      const payload = {
         ...form,
         username: form.username || null,
         password: form.password || null,
         api_key: form.api_key || null,
-      }),
+      }
+      return isEdit
+        ? patch(`/download-clients/${client.id}`, payload)
+        : post('/download-clients/', payload)
+    },
     onSuccess: () => {
       setOpen(false)
-      setForm(EMPTY_FORM)
-      onAdded()
+      if (!isEdit) setForm(EMPTY_FORM)
+      onSaved()
     },
+  })
+
+  const test = useMutation({
+    mutationFn: () =>
+      post<{ success: boolean; message: string }>('/download-clients/test', {
+        type: form.type,
+        host: form.host,
+        port: form.port,
+        username: form.username || null,
+        password: form.password || null,
+        api_key: form.api_key || null,
+      }),
   })
 
   function handleOpenChange(next: boolean) {
     setOpen(next)
-    if (!next) {
-      setForm(EMPTY_FORM)
+    if (next) {
+      // Re-seed from latest values whenever the dialog opens
+      setForm(isEdit ? formFromClient(client) : EMPTY_FORM)
+      reset()
+    } else {
       reset()
     }
+    test.reset()
   }
 
   function handleTypeChange(type: string) {
     setForm({ ...form, type, port: DEFAULT_PORTS[type] ?? 80 })
+    test.reset()
   }
 
   const canSubmit = form.name.trim() !== '' && form.host.trim() !== '' && !isPending
+  const canTest =
+    TESTABLE_TYPES.includes(form.type) && form.host.trim() !== '' && !test.isPending
 
   const labelStyle = {
     fontSize: '0.8rem',
@@ -227,28 +278,15 @@ function AddClientDialog({ onAdded }: { onAdded: () => void }) {
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogTrigger asChild>
-        <button
-          style={{
-            fontSize: '0.875rem',
-            padding: '6px 16px',
-            borderRadius: '6px',
-            background: 'var(--color-accent)',
-            color: '#fff',
-            border: 'none',
-            cursor: 'pointer',
-            fontWeight: 500,
-          }}
-        >
-          Add Client
-        </button>
-      </DialogTrigger>
+      <DialogTrigger asChild>{trigger}</DialogTrigger>
 
       <DialogContent
         style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border)' }}
       >
         <DialogHeader>
-          <DialogTitle style={{ color: 'var(--color-text)' }}>Add Download Client</DialogTitle>
+          <DialogTitle style={{ color: 'var(--color-text)' }}>
+            {isEdit ? 'Edit Download Client' : 'Add Download Client'}
+          </DialogTitle>
         </DialogHeader>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
@@ -367,12 +405,59 @@ function AddClientDialog({ onAdded }: { onAdded: () => void }) {
 
           {error && (
             <p style={{ fontSize: '0.8rem', color: 'var(--color-status-failed)', margin: 0 }}>
-              {error instanceof Error ? error.message : 'Failed to add client'}
+              {error instanceof Error
+                ? error.message
+                : isEdit
+                  ? 'Failed to save client'
+                  : 'Failed to add client'}
             </p>
           )}
         </div>
 
-        <DialogFooter>
+        {/* Test result */}
+        {TESTABLE_TYPES.includes(form.type) && (test.isPending || test.data) && (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              fontSize: '0.8rem',
+              marginTop: '4px',
+              color: test.isPending
+                ? 'var(--color-muted)'
+                : test.data?.success
+                  ? 'var(--color-status-downloaded)'
+                  : 'var(--color-status-failed)',
+            }}
+          >
+            {!test.isPending && test.data?.success && <CheckCircle size={14} />}
+            {!test.isPending && test.data && !test.data.success && <XCircle size={14} />}
+            <span>{test.isPending ? 'Testing connection…' : test.data?.message}</span>
+          </div>
+        )}
+
+        <DialogFooter style={{ justifyContent: 'space-between' }}>
+          {TESTABLE_TYPES.includes(form.type) ? (
+            <button
+              onClick={() => test.mutate()}
+              disabled={!canTest}
+              style={{
+                fontSize: '0.875rem',
+                padding: '6px 16px',
+                borderRadius: '6px',
+                background: 'transparent',
+                color: 'var(--color-text)',
+                border: '1px solid var(--color-border)',
+                cursor: canTest ? 'pointer' : 'not-allowed',
+                opacity: canTest ? 1 : 0.6,
+                fontWeight: 500,
+              }}
+            >
+              {test.isPending ? 'Testing…' : 'Test Connection'}
+            </button>
+          ) : (
+            <span />
+          )}
           <button
             onClick={() => mutate()}
             disabled={!canSubmit}
@@ -387,7 +472,7 @@ function AddClientDialog({ onAdded }: { onAdded: () => void }) {
               fontWeight: 500,
             }}
           >
-            {isPending ? 'Adding…' : 'Add Client'}
+            {isPending ? (isEdit ? 'Saving…' : 'Adding…') : isEdit ? 'Save Changes' : 'Add Client'}
           </button>
         </DialogFooter>
       </DialogContent>
@@ -395,7 +480,32 @@ function AddClientDialog({ onAdded }: { onAdded: () => void }) {
   )
 }
 
-function DownloadClientCard({ dc }: { dc: DownloadClient }) {
+function EditButton({ dc, onSaved }: { dc: DownloadClient; onSaved: () => void }) {
+  return (
+    <ClientFormDialog
+      client={dc}
+      onSaved={onSaved}
+      trigger={
+        <button
+          style={{
+            fontSize: '0.72rem',
+            padding: '3px 8px',
+            borderRadius: '4px',
+            background: 'transparent',
+            color: 'var(--color-muted)',
+            border: '1px solid var(--color-border)',
+            cursor: 'pointer',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          Edit
+        </button>
+      }
+    />
+  )
+}
+
+function DownloadClientCard({ dc, onSaved }: { dc: DownloadClient; onSaved: () => void }) {
   const typeLabel = TYPE_LABELS[dc.type] ?? dc.type
 
   return (
@@ -502,6 +612,7 @@ function DownloadClientCard({ dc }: { dc: DownloadClient }) {
       {/* Actions */}
       <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
         <TestButton clientId={dc.id} />
+        <EditButton dc={dc} onSaved={onSaved} />
         <DeleteButton clientId={dc.id} />
       </div>
     </div>
@@ -541,8 +652,24 @@ function DownloadClientsPage() {
             Configure NZBGet, SABnzbd, and qBittorrent connections
           </p>
         </div>
-        <AddClientDialog
-          onAdded={() => queryClient.invalidateQueries({ queryKey: ['download-clients'] })}
+        <ClientFormDialog
+          onSaved={() => queryClient.invalidateQueries({ queryKey: ['download-clients'] })}
+          trigger={
+            <button
+              style={{
+                fontSize: '0.875rem',
+                padding: '6px 16px',
+                borderRadius: '6px',
+                background: 'var(--color-accent)',
+                color: '#fff',
+                border: 'none',
+                cursor: 'pointer',
+                fontWeight: 500,
+              }}
+            >
+              Add Client
+            </button>
+          }
         />
       </div>
 
@@ -590,7 +717,11 @@ function DownloadClientsPage() {
       {!isError && !isLoading && clients && clients.length > 0 && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
           {clients.map((dc) => (
-            <DownloadClientCard key={dc.id} dc={dc} />
+            <DownloadClientCard
+              key={dc.id}
+              dc={dc}
+              onSaved={() => queryClient.invalidateQueries({ queryKey: ['download-clients'] })}
+            />
           ))}
         </div>
       )}

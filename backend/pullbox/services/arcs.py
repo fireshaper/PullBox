@@ -1,11 +1,11 @@
 """Story arc enrichment and detail assembly.
 
-`story_arc_credits` is only available on ComicVine's single-issue detail endpoint,
-so arc membership must be fetched one issue at a time. `enrich_issue_arcs` does
-this with bounded concurrency and stores the result so the issue list can render
-badges cheaply. `get_issue_arc_detail` assembles the expandable-panel payload by
-fetching each arc's full cross-series member list live and matching members
-against the local library.
+Arc membership is fetched from the metadata provider's single-issue detail endpoint
+(Metron returns ``arcs`` inline; ComicVine returns ``story_arc_credits``), one issue
+at a time. `enrich_issue_arcs` does this with bounded concurrency and stores the
+result so the issue list can render badges cheaply. `get_issue_arc_detail` assembles
+the expandable-panel payload by fetching each arc's full cross-series member list live
+and matching members against the local library.
 """
 
 from __future__ import annotations
@@ -14,11 +14,11 @@ import asyncio
 import logging
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from pullbox.clients.comicvine import ComicVineClient, ComicVineError
+from pullbox.clients.metadata import PROVIDER_ERRORS, MetadataProvider, ids_for
 from pullbox.models import Issue, StoryArc
 from pullbox.schemas import ArcMemberIssue, StoryArcDetail
 
@@ -27,28 +27,44 @@ logger = logging.getLogger(__name__)
 _ENRICH_CONCURRENCY = 5
 
 
+def _arc_key(arc_data: dict) -> str:
+    """A stable cache/identity key for an arc record, preferring the Metron id."""
+    return arc_data.get("metron_id") or arc_data.get("comicvine_id") or ""
+
+
 async def _get_or_create_arc(
     db: AsyncSession,
     cache: dict[str, StoryArc],
-    comicvine_id: str,
-    name: str,
+    arc_data: dict,
 ) -> StoryArc:
-    if comicvine_id in cache:
-        return cache[comicvine_id]
+    key = _arc_key(arc_data)
+    if key in cache:
+        return cache[key]
+    clauses = []
+    if arc_data.get("metron_id"):
+        clauses.append(StoryArc.metron_id == arc_data["metron_id"])
+    if arc_data.get("comicvine_id"):
+        clauses.append(StoryArc.comicvine_id == arc_data["comicvine_id"])
     arc = (
-        await db.execute(select(StoryArc).where(StoryArc.comicvine_id == comicvine_id))
-    ).scalar_one_or_none()
+        (await db.execute(select(StoryArc).where(or_(*clauses)))).scalar_one_or_none()
+        if clauses
+        else None
+    )
     if arc is None:
-        arc = StoryArc(comicvine_id=comicvine_id, name=name or "")
+        arc = StoryArc(
+            metron_id=arc_data.get("metron_id"),
+            comicvine_id=arc_data.get("comicvine_id"),
+            name=arc_data.get("name") or "",
+        )
         db.add(arc)
         await db.flush()
-    cache[comicvine_id] = arc
+    cache[key] = arc
     return arc
 
 
 async def enrich_issue_arcs(
     db: AsyncSession,
-    cv: ComicVineClient,
+    provider: MetadataProvider,
     issues: list[Issue],
 ) -> int:
     """Fetch story arc membership for any of `issues` not yet enriched.
@@ -77,9 +93,9 @@ async def enrich_issue_arcs(
     async def fetch(issue: Issue) -> tuple[Issue, dict | None]:
         async with sem:
             try:
-                return issue, await cv.get_issue(issue.comicvine_id)
-            except ComicVineError as exc:
-                logger.warning("Arc enrich failed for issue %s: %s", issue.comicvine_id, exc)
+                return issue, await provider.get_issue(**ids_for(issue))
+            except PROVIDER_ERRORS as exc:
+                logger.warning("Arc enrich failed for issue %s: %s", issue.id, exc)
                 return issue, None
 
     results = await asyncio.gather(*(fetch(i) for i in targets))
@@ -90,13 +106,11 @@ async def enrich_issue_arcs(
     for issue, detail in results:
         if detail is None:
             continue
-        existing_ids = {a.comicvine_id for a in issue.arcs}
+        existing_keys = {a.metron_id or a.comicvine_id for a in issue.arcs}
         for arc_data in detail["story_arcs"]:
-            if arc_data["comicvine_id"] in existing_ids:
+            if _arc_key(arc_data) in existing_keys:
                 continue
-            arc = await _get_or_create_arc(
-                db, arc_cache, arc_data["comicvine_id"], arc_data["name"]
-            )
+            arc = await _get_or_create_arc(db, arc_cache, arc_data)
             issue.arcs.append(arc)
         issue.arcs_synced_at = now
         enriched += 1
@@ -107,17 +121,18 @@ async def enrich_issue_arcs(
 
 async def _build_arc_detail(
     db: AsyncSession,
-    cv: ComicVineClient,
+    provider: MetadataProvider,
     arc: StoryArc,
 ) -> StoryArcDetail:
     """Fetch an arc's live member list and match members to the local library."""
     try:
-        data = await cv.get_story_arc(arc.comicvine_id)
-    except ComicVineError as exc:
-        logger.warning("Story arc detail failed for %s: %s", arc.comicvine_id, exc)
+        data = await provider.get_story_arc(**ids_for(arc))
+    except PROVIDER_ERRORS as exc:
+        logger.warning("Story arc detail failed for arc %s: %s", arc.id, exc)
         # Fall back to whatever we already know; panel still shows the arc.
         return StoryArcDetail(
             id=arc.id,
+            metron_id=arc.metron_id,
             comicvine_id=arc.comicvine_id,
             name=arc.name,
             publisher=arc.publisher,
@@ -135,24 +150,32 @@ async def _build_arc_detail(
     arc.count_of_issue_appearances = data["count_of_issue_appearances"]
     arc.detail_synced_at = datetime.utcnow()
 
-    member_ids = [m["comicvine_id"] for m in data["issues"]]
-    local: dict[str, Issue] = {}
-    if member_ids:
+    # Match members to local issues by whichever id each member carries.
+    member_metron = [m["metron_id"] for m in data["issues"] if m.get("metron_id")]
+    member_cv = [m["comicvine_id"] for m in data["issues"] if m.get("comicvine_id")]
+    local_by_metron: dict[str, Issue] = {}
+    local_by_cv: dict[str, Issue] = {}
+    if member_metron or member_cv:
+        clauses = []
+        if member_metron:
+            clauses.append(Issue.metron_id.in_(member_metron))
+        if member_cv:
+            clauses.append(Issue.comicvine_id.in_(member_cv))
         rows = (
             await db.execute(
-                select(Issue)
-                .where(Issue.comicvine_id.in_(member_ids))
-                .options(selectinload(Issue.series))
+                select(Issue).where(or_(*clauses)).options(selectinload(Issue.series))
             )
         ).scalars().all()
-        local = {i.comicvine_id: i for i in rows}
+        local_by_metron = {i.metron_id: i for i in rows if i.metron_id}
+        local_by_cv = {i.comicvine_id: i for i in rows if i.comicvine_id}
 
     members: list[ArcMemberIssue] = []
     for m in data["issues"]:
-        li = local.get(m["comicvine_id"])
+        li = local_by_metron.get(m.get("metron_id")) or local_by_cv.get(m.get("comicvine_id"))
         members.append(
             ArcMemberIssue(
-                comicvine_id=m["comicvine_id"],
+                metron_id=m.get("metron_id"),
+                comicvine_id=m.get("comicvine_id"),
                 name=m["name"],
                 site_detail_url=m["site_detail_url"],
                 in_library=li is not None,
@@ -166,6 +189,7 @@ async def _build_arc_detail(
 
     return StoryArcDetail(
         id=arc.id,
+        metron_id=arc.metron_id,
         comicvine_id=arc.comicvine_id,
         name=arc.name,
         publisher=arc.publisher,
@@ -178,7 +202,7 @@ async def _build_arc_detail(
 
 async def get_issue_arc_detail(
     db: AsyncSession,
-    cv: ComicVineClient,
+    provider: MetadataProvider,
     issue: Issue,
 ) -> list[StoryArcDetail]:
     """Return every arc `issue` belongs to, each with its full member list.
@@ -186,7 +210,7 @@ async def get_issue_arc_detail(
     Enriches the issue on demand first, so the panel works even before a full
     series sync has populated arc membership.
     """
-    await enrich_issue_arcs(db, cv, [issue])
+    await enrich_issue_arcs(db, provider, [issue])
 
     arcs = (
         await db.execute(
@@ -197,4 +221,4 @@ async def get_issue_arc_detail(
         )
     ).scalars().all()
 
-    return [await _build_arc_detail(db, cv, arc) for arc in arcs]
+    return [await _build_arc_detail(db, provider, arc) for arc in arcs]

@@ -28,6 +28,8 @@ SettingsDep = Annotated[Settings, Depends(get_settings)]
 # These are re-exported for backwards compatibility and for test overrides
 get_comicvine_client = deps.get_comicvine_client
 ComicVineClientDep = deps.ComicVineClientDep
+get_metadata_provider = deps.get_metadata_provider
+MetadataProviderDep = deps.MetadataProviderDep
 
 
 def _run_migrations() -> None:
@@ -53,13 +55,18 @@ async def lifespan(app: FastAPI):
 
     database.init_db(deps._settings)
 
-    # Configure the shared ComicVine rate limiter from settings so every caller
-    # (search, weekly refresh, arc enrichment, import sync) respects the API cap.
-    from pullbox.clients.comicvine import configure_rate_limiter
+    # Configure the shared metadata rate limiters from settings so every caller
+    # (search, weekly refresh, arc enrichment, import sync) respects each API's cap.
+    from pullbox.clients.comicvine import configure_rate_limiter as configure_cv_limiter
+    from pullbox.clients.metron import configure_rate_limiter as configure_metron_limiter
 
-    configure_rate_limiter(
+    configure_cv_limiter(
         deps._settings.comicvine_min_interval,
         deps._settings.comicvine_rate_limit_per_hour,
+    )
+    configure_metron_limiter(
+        deps._settings.metron_rate_limit_per_min,
+        deps._settings.metron_rate_limit_per_day,
     )
 
     await asyncio.to_thread(_run_migrations)
@@ -107,9 +114,31 @@ app.include_router(series_router)
 app.include_router(settings_router)
 
 
+class SPAStaticFiles(StaticFiles):
+    """Serve static assets, falling back to index.html for client-side routes.
+
+    A refresh (or direct visit) on a TanStack Router path like /series/123 hits
+    the server for that exact path. Real files (JS/CSS/images) resolve normally;
+    anything else returns index.html so the SPA router can render the route.
+    """
+
+    async def get_response(self, path: str, scope):
+        from starlette.exceptions import HTTPException as StarletteHTTPException
+
+        try:
+            return await super().get_response(path, scope)
+        except StarletteHTTPException as exc:
+            # Don't mask unknown API routes with the SPA shell — let them 404 as JSON.
+            # Use the URL path from scope; `path` uses OS separators (backslashes on Windows).
+            url_path = scope.get("path", "")
+            if exc.status_code == 404 and not url_path.startswith("/api/"):
+                return await super().get_response("index.html", scope)
+            raise
+
+
 _STATIC_DIR = Path(__file__).parent / "static"
 if _STATIC_DIR.exists():
-    app.mount("/", StaticFiles(directory=_STATIC_DIR, html=True), name="static")
+    app.mount("/", SPAStaticFiles(directory=_STATIC_DIR, html=True), name="static")
 
 if __name__ == "__main__":
     uvicorn.run("pullbox.main:app", host="0.0.0.0", port=8585, reload=True)

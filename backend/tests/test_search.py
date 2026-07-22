@@ -227,6 +227,120 @@ def test_newznab_fallback_to_cat_7000():
     assert call_count == 2
 
 
+# ── ProwlarrClient (JSON search API) ─────────────────────────────────────────
+
+PROWLARR_JSON = [
+    {
+        "title": "Batman 001",
+        "guid": "p-1",
+        "downloadUrl": "http://dl.test/1.nzb",
+        "protocol": "usenet",
+        "size": 1024,
+        "publishDate": "2024-01-01T00:00:00Z",
+    },
+    {
+        "title": "Batman 001 (torrent)",
+        "guid": "p-2",
+        "magnetUrl": "magnet:?xt=urn:btih:abc",
+        "protocol": "torrent",
+        "size": 2048,
+        "seeders": 12,
+        "publishDate": "2024-01-02T00:00:00Z",
+    },
+    {"title": "No download url", "guid": "p-3", "protocol": "torrent"},  # skipped
+]
+
+
+def _mock_json_response(status: int, payload: object) -> MagicMock:
+    mock_resp = MagicMock()
+    mock_resp.status_code = status
+    mock_resp.json = MagicMock(return_value=payload)
+
+    mock_client = AsyncMock()
+    mock_client.get = AsyncMock(return_value=mock_resp)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+
+    return MagicMock(return_value=mock_client)
+
+
+def test_prowlarr_search_parses_json():
+    from pullbox.clients.prowlarr import ProwlarrClient
+
+    indexer = _make_indexer(1, "Prowlarr", type="prowlarr")
+
+    with patch(
+        "pullbox.clients.prowlarr.httpx.AsyncClient", _mock_json_response(200, PROWLARR_JSON)
+    ):
+        results = asyncio.run(ProwlarrClient(indexer).search("batman 1"))
+
+    # The release with no download URL is dropped.
+    assert len(results) == 2
+    by_guid = {r.guid: r for r in results}
+    assert by_guid["p-1"].source_type == "usenet"
+    assert by_guid["p-1"].download_url == "http://dl.test/1.nzb"
+    assert by_guid["p-2"].source_type == "torrent"
+    assert by_guid["p-2"].download_url == "magnet:?xt=urn:btih:abc"
+    assert by_guid["p-2"].seeders == 12
+
+
+def test_prowlarr_403_returns_empty_list():
+    from pullbox.clients.prowlarr import ProwlarrClient
+
+    indexer = _make_indexer(1, "Prowlarr", type="prowlarr")
+
+    with patch(
+        "pullbox.clients.prowlarr.httpx.AsyncClient", _mock_json_response(403, {})
+    ):
+        results = asyncio.run(ProwlarrClient(indexer).search("batman 1"))
+
+    assert results == []
+
+
+# ── JackettClient (Torznab XML) ──────────────────────────────────────────────
+
+TORZNAB_2_ITEMS = b"""\
+<?xml version="1.0" encoding="UTF-8"?>
+<rss xmlns:torznab="http://torznab.com/schemas/2015/feed" version="2.0">
+  <channel>
+    <item>
+      <title>Batman 001</title>
+      <guid>t-1</guid>
+      <enclosure url="http://dl.test/1.torrent" length="1024" type="application/x-bittorrent"/>
+      <pubDate>Mon, 01 Jan 2024 00:00:00 +0000</pubDate>
+      <torznab:attr name="seeders" value="42"/>
+    </item>
+    <item>
+      <title>Batman 001 (magnet, no guid)</title>
+      <enclosure url="magnet:?xt=urn:btih:def" length="2048" type="application/x-bittorrent"/>
+      <torznab:attr name="seeders" value="7"/>
+    </item>
+  </channel>
+</rss>
+"""
+
+
+def test_jackett_search_parses_torznab():
+    from pullbox.clients.jackett import JackettClient
+
+    indexer = _make_indexer(1, "Jackett", type="jackett")
+
+    with patch(
+        "pullbox.clients.jackett.httpx.AsyncClient", _mock_http_response(200, TORZNAB_2_ITEMS)
+    ):
+        results = asyncio.run(JackettClient(indexer).search("batman 1"))
+
+    assert len(results) == 2
+    assert all(r.source_type == "torrent" for r in results)
+
+    first, second = results
+    assert first.guid == "t-1"
+    assert first.seeders == 42
+    # Item without <guid> falls back to the download URL.
+    assert second.guid == "magnet:?xt=urn:btih:def"
+    assert second.seeders == 7
+
+
 # ── Step 6.3 — build_search_queries ──────────────────────────────────────────
 
 
@@ -319,28 +433,41 @@ def test_fan_out_deduplicates_by_guid():
     assert guids.count("guid-1") == 1
 
 
-def test_fan_out_skips_non_newznab_types():
-    """prowlarr and jackett indexers must be silently skipped; nzbhydra2 uses newznab protocol."""
+def test_fan_out_dispatches_each_type_to_its_client():
+    """Each indexer type is routed to the matching client; unknown types are skipped."""
     idxs = [
         _make_indexer(1, "P", type="prowlarr"),
         _make_indexer(2, "J", type="jackett"),
         _make_indexer(3, "H", type="nzbhydra2"),
         _make_indexer(4, "N", type="newznab"),
+        _make_indexer(5, "X", type="unknowntype"),
     ]
 
     def _fake_newznab(indexer):
         assert indexer.type in ("newznab", "nzbhydra2")
-        # Return a distinct GUID per indexer so dedup doesn't collapse them
         return _make_client_returning([_make_result(f"guid-{indexer.type}")])
 
-    with patch("pullbox.clients.newznab.NewznabClient", side_effect=_fake_newznab) as mock_cls:
+    def _fake_prowlarr(indexer):
+        assert indexer.type == "prowlarr"
+        return _make_client_returning([_make_result("guid-prowlarr")])
+
+    def _fake_jackett(indexer):
+        assert indexer.type == "jackett"
+        return _make_client_returning([_make_result("guid-jackett")])
+
+    with (
+        patch("pullbox.clients.newznab.NewznabClient", side_effect=_fake_newznab) as mock_nz,
+        patch("pullbox.clients.prowlarr.ProwlarrClient", side_effect=_fake_prowlarr) as mock_pr,
+        patch("pullbox.clients.jackett.JackettClient", side_effect=_fake_jackett) as mock_ja,
+    ):
         results = asyncio.run(fan_out_search(_make_issue(), _make_series(), idxs))
 
-    # nzbhydra2 and newznab both use NewznabClient — prowlarr/jackett are skipped
-    assert mock_cls.call_count == 2
+    # newznab + nzbhydra2 share NewznabClient; prowlarr/jackett get their own; unknown skipped
+    assert mock_nz.call_count == 2
+    assert mock_pr.call_count == 1
+    assert mock_ja.call_count == 1
     guids = {r.guid for r in results}
-    assert "guid-newznab" in guids
-    assert "guid-nzbhydra2" in guids
+    assert guids == {"guid-newznab", "guid-nzbhydra2", "guid-prowlarr", "guid-jackett"}
 
 
 # ── Step 6.5 — score_results ─────────────────────────────────────────────────

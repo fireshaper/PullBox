@@ -47,13 +47,13 @@ describe('get()', () => {
 describe('post()', () => {
   it('sets Content-Type and sends JSON body', async () => {
     mockFetch.mockResolvedValue(makeResponse(201, { id: 1 }))
-    await post('/series', { comicvine_id: '12345' })
+    await post('/series', { metron_id: '12345' })
     const [, options] = mockFetch.mock.calls[0]
     expect((options as RequestInit).method).toBe('POST')
     expect((options as RequestInit & { headers: Record<string, string> }).headers['Content-Type']).toBe(
       'application/json',
     )
-    expect((options as RequestInit).body).toBe(JSON.stringify({ comicvine_id: '12345' }))
+    expect((options as RequestInit).body).toBe(JSON.stringify({ metron_id: '12345' }))
   })
 
   it('returns parsed response body', async () => {

@@ -210,8 +210,74 @@ def test_test_newznab_failure_on_wrong_root_element(client):
     assert resp.json()["success"] is False
 
 
-def test_test_non_newznab_returns_400(client):
-    created = client.post("/api/indexers/", json=PROWLARR_PAYLOAD).json()
+def test_test_unsupported_type_returns_400(client):
+    created = client.post(
+        "/api/indexers/",
+        json={**PROWLARR_PAYLOAD, "name": "Mystery", "type": "unknowntype"},
+    ).json()
     resp = client.post(f"/api/indexers/{created['id']}/test")
     assert resp.status_code == 400
     assert "not supported" in resp.json()["detail"].lower()
+
+
+def test_test_prowlarr_requires_api_key(client):
+    # PROWLARR_PAYLOAD has no api_key
+    created = client.post("/api/indexers/", json=PROWLARR_PAYLOAD).json()
+    resp = client.post(f"/api/indexers/{created['id']}/test")
+    assert resp.status_code == 200
+    assert resp.json()["success"] is False
+    assert "api key" in resp.json()["message"].lower()
+
+
+def test_test_prowlarr_success(client):
+    created = client.post(
+        "/api/indexers/", json={**PROWLARR_PAYLOAD, "api_key": "prowlarr-key"}
+    ).json()
+
+    with patch(
+        "pullbox.routers.indexers.httpx.AsyncClient",
+        _make_httpx_mock(200, b"{}"),
+    ):
+        resp = client.post(f"/api/indexers/{created['id']}/test")
+
+    assert resp.status_code == 200
+    assert resp.json()["success"] is True
+    assert "successful" in resp.json()["message"].lower()
+
+
+def test_test_jackett_success(client):
+    created = client.post(
+        "/api/indexers/",
+        json={
+            "name": "Jackett",
+            "type": "jackett",
+            "url": "http://localhost:9117",
+            "api_key": "jackett-key",
+            "priority": 60,
+        },
+    ).json()
+
+    with patch(
+        "pullbox.routers.indexers.httpx.AsyncClient",
+        _make_httpx_mock(200, VALID_CAPS_XML),
+    ):
+        resp = client.post(f"/api/indexers/{created['id']}/test")
+
+    assert resp.status_code == 200
+    assert resp.json()["success"] is True
+
+
+def test_test_jackett_requires_api_key(client):
+    created = client.post(
+        "/api/indexers/",
+        json={
+            "name": "Jackett",
+            "type": "jackett",
+            "url": "http://localhost:9117",
+            "priority": 60,
+        },
+    ).json()
+    resp = client.post(f"/api/indexers/{created['id']}/test")
+    assert resp.status_code == 200
+    assert resp.json()["success"] is False
+    assert "api key" in resp.json()["message"].lower()

@@ -16,12 +16,15 @@ def reset_db_globals(tmp_path, monkeypatch):
     db_module._engine = None
     db_module.AsyncSessionLocal = None
 
-    # Reset the process-global ComicVine rate limiter so throttle state (and the
-    # min-interval sleep) doesn't leak between tests. Tests that exercise the
-    # limiter configure it explicitly; everything else runs un-throttled.
+    # Reset the process-global rate limiters so throttle state (and the min-interval
+    # sleep) doesn't leak between tests. The app lifespan configures both during a
+    # TestClient run; tests that exercise a limiter configure it explicitly, and
+    # everything else runs un-throttled.
     import pullbox.clients.comicvine as cv_module
+    import pullbox.clients.metron as metron_module
 
     cv_module.reset_rate_limiter()
+    metron_module.reset_rate_limiter()
 
     # Point all database operations at a per-test temp file instead of /config/pullbox.db
     db_path = tmp_path / "test.db"
