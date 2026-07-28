@@ -16,11 +16,15 @@ import { Route as SeriesIndexRouteImport } from './routes/series/index'
 import { Route as QueueIndexRouteImport } from './routes/queue/index'
 import { Route as PullListIndexRouteImport } from './routes/pull-list/index'
 import { Route as DashboardIndexRouteImport } from './routes/dashboard/index'
+import { Route as ArcsIndexRouteImport } from './routes/arcs/index'
 import { Route as SettingsPostProcessingIndexRouteImport } from './routes/settings/post-processing/index'
 import { Route as SettingsLibraryImportIndexRouteImport } from './routes/settings/library-import/index'
 import { Route as SettingsIndexersIndexRouteImport } from './routes/settings/indexers/index'
+import { Route as SettingsGeneralIndexRouteImport } from './routes/settings/general/index'
+import { Route as SettingsFileHealthIndexRouteImport } from './routes/settings/file-health/index'
 import { Route as SettingsDownloadClientsIndexRouteImport } from './routes/settings/download-clients/index'
 import { Route as SeriesSeriesIdIndexRouteImport } from './routes/series/$seriesId/index'
+import { Route as ArcsArcIdIndexRouteImport } from './routes/arcs/$arcId/index'
 
 const SettingsRoute = SettingsRouteImport.update({
   id: '/settings',
@@ -57,6 +61,11 @@ const DashboardIndexRoute = DashboardIndexRouteImport.update({
   path: '/dashboard/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ArcsIndexRoute = ArcsIndexRouteImport.update({
+  id: '/arcs/',
+  path: '/arcs/',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const SettingsPostProcessingIndexRoute =
   SettingsPostProcessingIndexRouteImport.update({
     id: '/post-processing/',
@@ -74,6 +83,16 @@ const SettingsIndexersIndexRoute = SettingsIndexersIndexRouteImport.update({
   path: '/indexers/',
   getParentRoute: () => SettingsRoute,
 } as any)
+const SettingsGeneralIndexRoute = SettingsGeneralIndexRouteImport.update({
+  id: '/general/',
+  path: '/general/',
+  getParentRoute: () => SettingsRoute,
+} as any)
+const SettingsFileHealthIndexRoute = SettingsFileHealthIndexRouteImport.update({
+  id: '/file-health/',
+  path: '/file-health/',
+  getParentRoute: () => SettingsRoute,
+} as any)
 const SettingsDownloadClientsIndexRoute =
   SettingsDownloadClientsIndexRouteImport.update({
     id: '/download-clients/',
@@ -85,30 +104,43 @@ const SeriesSeriesIdIndexRoute = SeriesSeriesIdIndexRouteImport.update({
   path: '/series/$seriesId/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ArcsArcIdIndexRoute = ArcsArcIdIndexRouteImport.update({
+  id: '/arcs/$arcId/',
+  path: '/arcs/$arcId/',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/settings': typeof SettingsRouteWithChildren
+  '/arcs/': typeof ArcsIndexRoute
   '/dashboard/': typeof DashboardIndexRoute
   '/pull-list/': typeof PullListIndexRoute
   '/queue/': typeof QueueIndexRoute
   '/series/': typeof SeriesIndexRoute
   '/settings/': typeof SettingsIndexRoute
+  '/arcs/$arcId/': typeof ArcsArcIdIndexRoute
   '/series/$seriesId/': typeof SeriesSeriesIdIndexRoute
   '/settings/download-clients/': typeof SettingsDownloadClientsIndexRoute
+  '/settings/file-health/': typeof SettingsFileHealthIndexRoute
+  '/settings/general/': typeof SettingsGeneralIndexRoute
   '/settings/indexers/': typeof SettingsIndexersIndexRoute
   '/settings/library-import/': typeof SettingsLibraryImportIndexRoute
   '/settings/post-processing/': typeof SettingsPostProcessingIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/arcs': typeof ArcsIndexRoute
   '/dashboard': typeof DashboardIndexRoute
   '/pull-list': typeof PullListIndexRoute
   '/queue': typeof QueueIndexRoute
   '/series': typeof SeriesIndexRoute
   '/settings': typeof SettingsIndexRoute
+  '/arcs/$arcId': typeof ArcsArcIdIndexRoute
   '/series/$seriesId': typeof SeriesSeriesIdIndexRoute
   '/settings/download-clients': typeof SettingsDownloadClientsIndexRoute
+  '/settings/file-health': typeof SettingsFileHealthIndexRoute
+  '/settings/general': typeof SettingsGeneralIndexRoute
   '/settings/indexers': typeof SettingsIndexersIndexRoute
   '/settings/library-import': typeof SettingsLibraryImportIndexRoute
   '/settings/post-processing': typeof SettingsPostProcessingIndexRoute
@@ -117,13 +149,17 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/settings': typeof SettingsRouteWithChildren
+  '/arcs/': typeof ArcsIndexRoute
   '/dashboard/': typeof DashboardIndexRoute
   '/pull-list/': typeof PullListIndexRoute
   '/queue/': typeof QueueIndexRoute
   '/series/': typeof SeriesIndexRoute
   '/settings/': typeof SettingsIndexRoute
+  '/arcs/$arcId/': typeof ArcsArcIdIndexRoute
   '/series/$seriesId/': typeof SeriesSeriesIdIndexRoute
   '/settings/download-clients/': typeof SettingsDownloadClientsIndexRoute
+  '/settings/file-health/': typeof SettingsFileHealthIndexRoute
+  '/settings/general/': typeof SettingsGeneralIndexRoute
   '/settings/indexers/': typeof SettingsIndexersIndexRoute
   '/settings/library-import/': typeof SettingsLibraryImportIndexRoute
   '/settings/post-processing/': typeof SettingsPostProcessingIndexRoute
@@ -133,26 +169,34 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/settings'
+    | '/arcs/'
     | '/dashboard/'
     | '/pull-list/'
     | '/queue/'
     | '/series/'
     | '/settings/'
+    | '/arcs/$arcId/'
     | '/series/$seriesId/'
     | '/settings/download-clients/'
+    | '/settings/file-health/'
+    | '/settings/general/'
     | '/settings/indexers/'
     | '/settings/library-import/'
     | '/settings/post-processing/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/arcs'
     | '/dashboard'
     | '/pull-list'
     | '/queue'
     | '/series'
     | '/settings'
+    | '/arcs/$arcId'
     | '/series/$seriesId'
     | '/settings/download-clients'
+    | '/settings/file-health'
+    | '/settings/general'
     | '/settings/indexers'
     | '/settings/library-import'
     | '/settings/post-processing'
@@ -160,13 +204,17 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/settings'
+    | '/arcs/'
     | '/dashboard/'
     | '/pull-list/'
     | '/queue/'
     | '/series/'
     | '/settings/'
+    | '/arcs/$arcId/'
     | '/series/$seriesId/'
     | '/settings/download-clients/'
+    | '/settings/file-health/'
+    | '/settings/general/'
     | '/settings/indexers/'
     | '/settings/library-import/'
     | '/settings/post-processing/'
@@ -175,10 +223,12 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   SettingsRoute: typeof SettingsRouteWithChildren
+  ArcsIndexRoute: typeof ArcsIndexRoute
   DashboardIndexRoute: typeof DashboardIndexRoute
   PullListIndexRoute: typeof PullListIndexRoute
   QueueIndexRoute: typeof QueueIndexRoute
   SeriesIndexRoute: typeof SeriesIndexRoute
+  ArcsArcIdIndexRoute: typeof ArcsArcIdIndexRoute
   SeriesSeriesIdIndexRoute: typeof SeriesSeriesIdIndexRoute
 }
 
@@ -233,6 +283,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DashboardIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/arcs/': {
+      id: '/arcs/'
+      path: '/arcs'
+      fullPath: '/arcs/'
+      preLoaderRoute: typeof ArcsIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/settings/post-processing/': {
       id: '/settings/post-processing/'
       path: '/post-processing'
@@ -254,6 +311,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SettingsIndexersIndexRouteImport
       parentRoute: typeof SettingsRoute
     }
+    '/settings/general/': {
+      id: '/settings/general/'
+      path: '/general'
+      fullPath: '/settings/general/'
+      preLoaderRoute: typeof SettingsGeneralIndexRouteImport
+      parentRoute: typeof SettingsRoute
+    }
+    '/settings/file-health/': {
+      id: '/settings/file-health/'
+      path: '/file-health'
+      fullPath: '/settings/file-health/'
+      preLoaderRoute: typeof SettingsFileHealthIndexRouteImport
+      parentRoute: typeof SettingsRoute
+    }
     '/settings/download-clients/': {
       id: '/settings/download-clients/'
       path: '/download-clients'
@@ -268,12 +339,21 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SeriesSeriesIdIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/arcs/$arcId/': {
+      id: '/arcs/$arcId/'
+      path: '/arcs/$arcId'
+      fullPath: '/arcs/$arcId/'
+      preLoaderRoute: typeof ArcsArcIdIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
 interface SettingsRouteChildren {
   SettingsIndexRoute: typeof SettingsIndexRoute
   SettingsDownloadClientsIndexRoute: typeof SettingsDownloadClientsIndexRoute
+  SettingsFileHealthIndexRoute: typeof SettingsFileHealthIndexRoute
+  SettingsGeneralIndexRoute: typeof SettingsGeneralIndexRoute
   SettingsIndexersIndexRoute: typeof SettingsIndexersIndexRoute
   SettingsLibraryImportIndexRoute: typeof SettingsLibraryImportIndexRoute
   SettingsPostProcessingIndexRoute: typeof SettingsPostProcessingIndexRoute
@@ -282,6 +362,8 @@ interface SettingsRouteChildren {
 const SettingsRouteChildren: SettingsRouteChildren = {
   SettingsIndexRoute: SettingsIndexRoute,
   SettingsDownloadClientsIndexRoute: SettingsDownloadClientsIndexRoute,
+  SettingsFileHealthIndexRoute: SettingsFileHealthIndexRoute,
+  SettingsGeneralIndexRoute: SettingsGeneralIndexRoute,
   SettingsIndexersIndexRoute: SettingsIndexersIndexRoute,
   SettingsLibraryImportIndexRoute: SettingsLibraryImportIndexRoute,
   SettingsPostProcessingIndexRoute: SettingsPostProcessingIndexRoute,
@@ -294,10 +376,12 @@ const SettingsRouteWithChildren = SettingsRoute._addFileChildren(
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   SettingsRoute: SettingsRouteWithChildren,
+  ArcsIndexRoute: ArcsIndexRoute,
   DashboardIndexRoute: DashboardIndexRoute,
   PullListIndexRoute: PullListIndexRoute,
   QueueIndexRoute: QueueIndexRoute,
   SeriesIndexRoute: SeriesIndexRoute,
+  ArcsArcIdIndexRoute: ArcsArcIdIndexRoute,
   SeriesSeriesIdIndexRoute: SeriesSeriesIdIndexRoute,
 }
 export const routeTree = rootRouteImport

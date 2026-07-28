@@ -1,5 +1,5 @@
 import { createRootRoute, Link, Outlet } from '@tanstack/react-router'
-import { BookOpen, Calendar, Download, LayoutDashboard, Settings } from 'lucide-react'
+import { BookOpen, Calendar, Download, Layers, LayoutDashboard, Settings } from 'lucide-react'
 
 export const Route = createRootRoute({
   component: AppLayout,
@@ -9,6 +9,7 @@ const NAV_ITEMS = [
   { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { to: '/pull-list', label: 'Pull List', icon: Calendar },
   { to: '/series', label: 'Series', icon: BookOpen },
+  { to: '/arcs', label: 'Story Arcs', icon: Layers },
   { to: '/queue', label: 'Queue', icon: Download },
   { to: '/settings', label: 'Settings', icon: Settings },
 ] as const

@@ -5,10 +5,11 @@ import {
   ChevronDown,
   ChevronRight,
   ExternalLink,
+  HardDrive,
   Layers,
   RefreshCw,
 } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { type CSSProperties, useEffect, useRef, useState } from 'react'
 import { ApiError, get, patch, post } from '../../../api/client'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -59,6 +60,17 @@ type ArcMember = {
   local_status: string | null
 }
 
+type RescanResult = {
+  found: number
+  relinked: number
+  missing: number
+  unchanged: number
+  files_scanned: number
+  folders: string[]
+  unmatched_files: string[]
+  message: string
+}
+
 type ArcDetail = {
   id: number
   metron_id: string | null
@@ -86,6 +98,19 @@ const STATUS_COLORS: Record<string, string> = {
   skipped: 'var(--color-status-skipped)',
   failed: 'var(--color-status-failed)',
   unknown: 'var(--color-muted)',
+}
+
+// Shared look for the buttons in the Issues header (cursor/opacity per button).
+const ACTION_BUTTON: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: '6px',
+  padding: '4px 12px',
+  borderRadius: '6px',
+  fontSize: '0.8rem',
+  background: 'var(--color-surface)',
+  border: '1px solid var(--color-border)',
+  color: 'var(--color-text)',
 }
 
 // ── Issue action buttons ──────────────────────────────────────────────────────
@@ -358,6 +383,13 @@ function SeriesDetailPage() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['series', id, 'issues'] }),
   })
 
+  // Disk-only pass: links files that appeared in the series folder and clears
+  // issues whose file is gone. Never talks to the metadata provider.
+  const rescanMutation = useMutation<RescanResult>({
+    mutationFn: () => post<RescanResult>(`/series/${id}/rescan`),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['series', id, 'issues'] }),
+  })
+
   const markAllWantedMutation = useMutation({
     mutationFn: () => post(`/series/${id}/mark-all-wanted`),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['series', id, 'issues'] }),
@@ -546,12 +578,7 @@ function SeriesDetailPage() {
               onClick={() => markAllWantedMutation.mutate()}
               disabled={markAllWantedMutation.isPending || !issues || issues.every(i => !['unknown', 'failed'].includes(i.status))}
               style={{
-                padding: '4px 12px',
-                borderRadius: '6px',
-                fontSize: '0.8rem',
-                background: 'var(--color-surface)',
-                border: '1px solid var(--color-border)',
-                color: 'var(--color-text)',
+                ...ACTION_BUTTON,
                 cursor: markAllWantedMutation.isPending ? 'wait' : 'pointer',
                 opacity: (!issues || issues.every(i => !['unknown', 'failed'].includes(i.status))) ? 0.4 : 1,
               }}
@@ -559,30 +586,56 @@ function SeriesDetailPage() {
               {markAllWantedMutation.isPending ? 'Marking…' : 'Mark all as Wanted'}
             </button>
             <button
+              onClick={() => rescanMutation.mutate()}
+              disabled={rescanMutation.isPending}
+              title="Check this series' folder for files added or deleted outside PullBox"
+              style={{
+                ...ACTION_BUTTON,
+                cursor: rescanMutation.isPending ? 'wait' : 'pointer',
+              }}
+            >
+              <HardDrive size={12} />
+              {rescanMutation.isPending ? 'Scanning…' : 'Re-scan Files'}
+            </button>
+            <button
               onClick={() => syncMutation.mutate()}
               disabled={syncMutation.isPending}
+              title="Refresh metadata and the issue list from Metron (ComicVine as fallback)"
               style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '6px',
-                padding: '4px 12px',
-                borderRadius: '6px',
-                fontSize: '0.8rem',
-                background: 'var(--color-surface)',
-                border: '1px solid var(--color-border)',
-                color: 'var(--color-text)',
+                ...ACTION_BUTTON,
                 cursor: syncMutation.isPending ? 'wait' : 'pointer',
               }}
             >
               <RefreshCw size={12} />
-              {syncMutation.isPending ? 'Syncing…' : 'Sync from ComicVine'}
+              {syncMutation.isPending ? 'Syncing…' : 'Sync Series'}
             </button>
           </div>
         </div>
 
+        {rescanMutation.data && !rescanMutation.isPending && (
+          <div style={{ color: 'var(--color-muted)', fontSize: '0.8rem', marginBottom: '12px' }}>
+            {rescanMutation.data.message}
+            {rescanMutation.data.unmatched_files.length > 0 && (
+              <> — {rescanMutation.data.unmatched_files.length} file(s) matched no issue.</>
+            )}
+          </div>
+        )}
+
+        {rescanMutation.isError && (
+          <div
+            style={{
+              color: 'var(--color-status-failed)',
+              fontSize: '0.8rem',
+              marginBottom: '12px',
+            }}
+          >
+            Re-scan failed: {(rescanMutation.error as Error).message}
+          </div>
+        )}
+
         {(issuesLoading || syncMutation.isPending) && (
           <div style={{ color: 'var(--color-muted)', fontSize: '0.875rem' }}>
-            {syncMutation.isPending ? 'Syncing issues from ComicVine…' : 'Loading issues…'}
+            {syncMutation.isPending ? 'Syncing series metadata and issues…' : 'Loading issues…'}
           </div>
         )}
 

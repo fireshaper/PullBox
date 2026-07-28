@@ -22,9 +22,16 @@ comicvine_api_key: ""
 # Secret key for signing internal tokens. Change this to a random string.
 secret_key: "changeme"
 
+# Shared token for the read-only companion feed at /api/external/* (consumed by
+# Thwip). Set it to a random string and give the same value to the companion,
+# which sends it as an X-PullBox-Token header. Leave blank to keep those routes
+# disabled — they expose the whole library including on-disk file paths.
+external_api_token: ""
+
 # ── Paths ─────────────────────────────────────────────────────────────────────
 
-# Root folder where downloaded comics are stored.
+# Root folder where downloaded comics are stored. This is the startup default —
+# Settings → General can override it at runtime, and that override wins.
 library_path: "/comics"
 
 # Directory where the database and this config file live.
@@ -46,7 +53,25 @@ max_retries: 20
 # How many weeks ahead to include in the pull list (today + N weeks).
 pull_list_lookahead_weeks: 2
 
+# How often (minutes) to check the download clients for finished downloads.
+# This is the main delay between the client finishing a file and PullBox moving
+# it into the library. Each poll is only a couple of API calls per active job,
+# so 1 is fine for a local client; raise it if the client is slow or remote.
+download_poll_interval_minutes: 1
+
+# Subscribed story arcs: how often the background pass fills in their missing
+# issues, and how many metadata lookups it may spend per arc. Each member the
+# library doesn't already hold costs one lookup against the same budget search
+# and the calendar refresh draw on, so a big crossover finishes over several
+# runs rather than in one burst. Raise the budget only if you have headroom.
+arc_sync_interval_minutes: 60
+arc_sync_budget: 15
+
 # ── Debug ─────────────────────────────────────────────────────────────────────
 
 # Enable debug mode (verbose logging, FastAPI debug pages).
 debug: false
+
+# Echo every SQL statement to the log. Very noisy — off by default, and
+# independent of debug so app logs stay readable. Turn on only to debug queries.
+db_echo: false

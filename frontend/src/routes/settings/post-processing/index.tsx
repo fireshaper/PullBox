@@ -28,6 +28,7 @@ type PostProcessingSettings = {
   destination_root: string | null
   folder_pattern: string
   file_pattern: string
+  delete_empty_folder: boolean
 }
 
 type Form = {
@@ -36,6 +37,7 @@ type Form = {
   destination_root: string
   folder_pattern: string
   file_pattern: string
+  delete_empty_folder: boolean
 }
 
 const TOKENS = ['{series}', '{issue}', '{issue:3}', '{publisher}', '{year}', '{title}', '{ext}']
@@ -122,6 +124,7 @@ function PostProcessingPage() {
         destination_root: data.destination_root ?? '',
         folder_pattern: data.folder_pattern,
         file_pattern: data.file_pattern,
+        delete_empty_folder: data.delete_empty_folder,
       })
     }
   }, [data])
@@ -142,7 +145,8 @@ function PostProcessingPage() {
       form.operation !== data.operation ||
       form.destination_root !== (data.destination_root ?? '') ||
       form.folder_pattern !== data.folder_pattern ||
-      form.file_pattern !== data.file_pattern
+      form.file_pattern !== data.file_pattern ||
+      form.delete_empty_folder !== data.delete_empty_folder
     )
   }, [data, form])
 
@@ -234,6 +238,52 @@ function PostProcessingPage() {
                   ? 'Copies the file, leaving the original in place.'
                   : 'Creates a hardlink (keeps torrents seeding); falls back to copy across filesystems.'}
             </p>
+
+            {/* Move-only: copy/hardlink leave the original, so the folder is never empty. */}
+            {form.operation === 'move' && (
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: '10px',
+                  marginTop: '12px',
+                  paddingLeft: '2px',
+                }}
+              >
+                <Checkbox
+                  id="pp-delete-empty-folder"
+                  checked={form.delete_empty_folder}
+                  onCheckedChange={(checked) => {
+                    setForm({ ...form, delete_empty_folder: checked === true })
+                    reset()
+                  }}
+                  style={{ marginTop: '2px' }}
+                />
+                <div>
+                  <label
+                    htmlFor="pp-delete-empty-folder"
+                    style={{
+                      fontSize: '0.875rem',
+                      color: 'var(--color-text)',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    Delete the download folder if it's empty afterwards
+                  </label>
+                  <p
+                    style={{
+                      fontSize: '0.72rem',
+                      color: 'var(--color-muted)',
+                      marginTop: '3px',
+                    }}
+                  >
+                    Removes the client's leftover job folder once the comic has been moved
+                    out. Folders still holding other files (nfo, par2, samples) are left
+                    alone.
+                  </p>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Destination root */}
