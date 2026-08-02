@@ -19,6 +19,7 @@ type ReleaseSeries = {
   id: number
   title: string
   publisher: string | null
+  subscribed: boolean
 }
 
 type WeeklyRelease = {
@@ -100,7 +101,9 @@ const STATUS_COLORS: Record<string, string> = {
   unknown: 'var(--color-muted)',
 }
 
-function AddToPullboxButton({ seriesId }: { seriesId: number }) {
+/** Both states land on the same series page — the label is what differs, because
+ *  "Add to Pullbox" on a series you already follow reads as a broken button. */
+function SeriesButton({ seriesId, subscribed }: { seriesId: number; subscribed: boolean }) {
   const navigate = useNavigate()
   return (
     <button
@@ -111,14 +114,14 @@ function AddToPullboxButton({ seriesId }: { seriesId: number }) {
         fontSize: '0.75rem',
         padding: '4px 10px',
         borderRadius: '4px',
-        background: 'var(--color-accent)',
-        color: '#fff',
-        border: 'none',
+        background: subscribed ? 'var(--color-surface)' : 'var(--color-accent)',
+        color: subscribed ? 'var(--color-text)' : '#fff',
+        border: subscribed ? '1px solid var(--color-border)' : 'none',
         cursor: 'pointer',
         whiteSpace: 'nowrap',
       }}
     >
-      Add to Pullbox
+      {subscribed ? 'Go to Series' : 'Add to Pullbox'}
     </button>
   )
 }
@@ -340,7 +343,10 @@ function PullListPage() {
                       >
                         {release.issue.status}
                       </span>
-                      <AddToPullboxButton seriesId={release.series.id} />
+                      <SeriesButton
+                        seriesId={release.series.id}
+                        subscribed={release.series.subscribed}
+                      />
                     </div>
                   </div>
                 ))}

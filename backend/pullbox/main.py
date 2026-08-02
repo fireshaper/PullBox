@@ -94,8 +94,10 @@ async def health(settings: SettingsDep):
 
 # Routers — included after app is created to avoid circular imports
 from pullbox.routers.arcs import router as arcs_router  # noqa: E402
+from pullbox.routers.calendar import router as calendar_router  # noqa: E402
 from pullbox.routers.dashboard import router as dashboard_router  # noqa: E402
 from pullbox.routers.download_clients import router as download_clients_router  # noqa: E402
+from pullbox.routers.duplicates import router as duplicates_router  # noqa: E402
 from pullbox.routers.external import router as external_router  # noqa: E402
 from pullbox.routers.file_health import router as file_health_router  # noqa: E402
 from pullbox.routers.indexers import router as indexers_router  # noqa: E402
@@ -107,8 +109,10 @@ from pullbox.routers.series import router as series_router  # noqa: E402
 from pullbox.routers.settings import router as settings_router  # noqa: E402
 
 app.include_router(arcs_router)
+app.include_router(calendar_router)
 app.include_router(dashboard_router)
 app.include_router(download_clients_router)
+app.include_router(duplicates_router)
 app.include_router(external_router)
 app.include_router(file_health_router)
 app.include_router(indexers_router)

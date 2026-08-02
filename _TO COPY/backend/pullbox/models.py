@@ -38,6 +38,13 @@ class Series(Base):
     # is the source). NULL when unknown.
     comicvine_id: Mapped[str | None] = mapped_column(String, unique=True, nullable=True)
     title: Mapped[str] = mapped_column(String, nullable=False)
+    # `title` folded to lowercase alphanumerics, maintained automatically by the
+    # before_flush listener in database.py. Metron and ComicVine punctuate the
+    # same book differently ("Batman / Superman" vs "Batman/Superman") and their
+    # ids live in separate namespaces, so this is the only cheap way to
+    # recognise a series across the two sources. Indexed — it is looked up once
+    # per release row during a calendar refresh.
+    norm_title: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     publisher: Mapped[str | None] = mapped_column(String, nullable=True)
     start_year: Mapped[int | None] = mapped_column(Integer, nullable=True)
     status: Mapped[str] = mapped_column(String, default="ongoing")

@@ -25,6 +25,7 @@ async def _seed_release(
     series_title: str = "Test Series",
     publisher: str = "Test Publisher",
     issue_number: str = "1",
+    subscribed: bool = False,
 ) -> tuple[int, int]:
     """Insert Series → Issue → WeeklyRelease directly via DB. Returns (wr_id, issue_id)."""
     import pullbox.database as db_module
@@ -36,6 +37,7 @@ async def _seed_release(
             comicvine_id=f"cv-series-{cv_suffix}",
             title=series_title,
             publisher=publisher,
+            subscribed=subscribed,
         )
         db.add(series)
         await db.flush()
@@ -232,6 +234,22 @@ def test_weekly_releases_response_shape(client):
     assert "id" in series
     assert "title" in series
     assert "publisher" in series
+    assert "subscribed" in series
+
+
+def test_weekly_release_reports_subscription_state(client):
+    """The pull list swaps 'Add to Pullbox' for 'Go to Series' off this flag, so it
+    must reflect the Series row rather than defaulting to false."""
+    monday = _current_week_monday()
+    asyncio.run(_seed_release(monday, series_title="Followed", subscribed=True))
+    asyncio.run(_seed_release(monday, series_title="Unfollowed", subscribed=False))
+
+    resp = client.get("/api/releases/weekly")
+    assert resp.status_code == 200
+    by_title = {r["series"]["title"]: r["series"]["subscribed"] for r in resp.json()}
+
+    assert by_title["Followed"] is True
+    assert by_title["Unfollowed"] is False
 
 
 # ── Step 10.2: nightly_calendar_refresh ──────────────────────────────────────

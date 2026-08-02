@@ -142,12 +142,16 @@ async def nightly_calendar_refresh() -> dict:
     For each release: find-or-create Series and Issue rows, then upsert WeeklyRelease.
     Never overwrites Issue.status on existing issues.
     """
-    from sqlalchemy import or_, select
+    from sqlalchemy import select
 
     import pullbox.database as db_module
     import pullbox.deps as deps_module
     from pullbox.clients.metadata import PROVIDER_ERRORS, ids_for  # noqa: PLC0415
     from pullbox.models import Issue, Series, WeeklyRelease  # noqa: PLC0415
+    from pullbox.services.dedupe import (  # noqa: PLC0415
+        find_issue_for_release,
+        find_series_for_release,
+    )
 
     logger.info("nightly_calendar_refresh: starting")
 
@@ -201,19 +205,12 @@ async def nightly_calendar_refresh() -> dict:
 
                         series_ids = ids_for(release_data["series"])
 
-                        # Find or create Series (match on either metadata id)
-                        series_clauses = []
-                        if series_ids.get("metron_id"):
-                            series_clauses.append(Series.metron_id == series_ids["metron_id"])
-                        if series_ids.get("comicvine_id"):
-                            series_clauses.append(
-                                Series.comicvine_id == series_ids["comicvine_id"]
-                            )
-                        series = (
-                            (await db.execute(select(Series).where(or_(*series_clauses))))
-                            .scalar_one_or_none()
-                            if series_clauses
-                            else None
+                        # Find or create Series. Matching bridges the Metron and
+                        # ComicVine id spaces via the normalized title — without
+                        # that this loop creates a parallel row every time a week
+                        # is served by the other source.
+                        series = await find_series_for_release(
+                            db, series_ids, release_data["series"].get("title")
                         )
                         if series is None:
                             series = Series(
@@ -250,16 +247,11 @@ async def nightly_calendar_refresh() -> dict:
                         issue_ids = ids_for(release_data)
 
                         # Find or create Issue (never overwrite status)
-                        issue_clauses = []
-                        if issue_ids.get("metron_id"):
-                            issue_clauses.append(Issue.metron_id == issue_ids["metron_id"])
-                        if issue_ids.get("comicvine_id"):
-                            issue_clauses.append(Issue.comicvine_id == issue_ids["comicvine_id"])
-                        issue = (
-                            (await db.execute(select(Issue).where(or_(*issue_clauses))))
-                            .scalar_one_or_none()
-                            if issue_clauses
-                            else None
+                        issue = await find_issue_for_release(
+                            db,
+                            issue_ids,
+                            series.id,
+                            str(release_data.get("issue_number", "")),
                         )
                         new_issue = False
                         if issue is None:

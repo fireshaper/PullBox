@@ -7,13 +7,14 @@ import logging
 from datetime import date
 
 from fastapi import APIRouter, HTTPException
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from pullbox.clients.metadata import PROVIDER_ERRORS, ids_for
 from pullbox.deps import DbDep, MetadataProviderDep, SettingsDep
 from pullbox.models import Issue, Series, WeeklyRelease
 from pullbox.schemas import ReleaseIssueSummary, ReleaseSeriesSummary, WeeklyReleaseResponse
+from pullbox.services.dedupe import find_issue_for_release, find_series_for_release
 
 # Bound concurrent volume lookups during publisher enrichment so a busy week
 # doesn't fan out dozens of simultaneous ComicVine requests.
@@ -63,26 +64,9 @@ def _parse_date_str(value: object) -> date | None:
         return None
 
 
-async def _find_series(db, ids: dict) -> Series | None:
-    clauses = []
-    if ids.get("metron_id"):
-        clauses.append(Series.metron_id == ids["metron_id"])
-    if ids.get("comicvine_id"):
-        clauses.append(Series.comicvine_id == ids["comicvine_id"])
-    if not clauses:
-        return None
-    return (await db.execute(select(Series).where(or_(*clauses)))).scalar_one_or_none()
-
-
-async def _find_issue(db, ids: dict) -> Issue | None:
-    clauses = []
-    if ids.get("metron_id"):
-        clauses.append(Issue.metron_id == ids["metron_id"])
-    if ids.get("comicvine_id"):
-        clauses.append(Issue.comicvine_id == ids["comicvine_id"])
-    if not clauses:
-        return None
-    return (await db.execute(select(Issue).where(or_(*clauses)))).scalar_one_or_none()
+# Series/Issue matching lives in services/dedupe.py because the scheduler's
+# calendar refresh needs the identical logic; two divergent copies is how the two
+# id spaces drifted apart in the first place.
 
 
 async def _refresh_week(db, provider, monday: date, sunday: date) -> None:
@@ -100,7 +84,9 @@ async def _refresh_week(db, provider, monday: date, sunday: date) -> None:
 
     for release_data in releases:
         series_ids = ids_for(release_data["series"])
-        series = await _find_series(db, series_ids)
+        series = await find_series_for_release(
+            db, series_ids, release_data["series"].get("title")
+        )
         if series is None:
             series = Series(
                 metron_id=series_ids.get("metron_id"),
@@ -115,7 +101,12 @@ async def _refresh_week(db, provider, monday: date, sunday: date) -> None:
         if series.publisher is None:
             needs_publisher[series.id] = series
 
-        issue = await _find_issue(db, ids_for(release_data))
+        issue = await find_issue_for_release(
+            db,
+            ids_for(release_data),
+            series.id,
+            str(release_data.get("issue_number", "")),
+        )
         if issue is None:
             issue = Issue(
                 series_id=series.id,

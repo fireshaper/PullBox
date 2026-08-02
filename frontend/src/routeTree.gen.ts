@@ -16,12 +16,14 @@ import { Route as SeriesIndexRouteImport } from './routes/series/index'
 import { Route as QueueIndexRouteImport } from './routes/queue/index'
 import { Route as PullListIndexRouteImport } from './routes/pull-list/index'
 import { Route as DashboardIndexRouteImport } from './routes/dashboard/index'
+import { Route as CalendarIndexRouteImport } from './routes/calendar/index'
 import { Route as ArcsIndexRouteImport } from './routes/arcs/index'
 import { Route as SettingsPostProcessingIndexRouteImport } from './routes/settings/post-processing/index'
 import { Route as SettingsLibraryImportIndexRouteImport } from './routes/settings/library-import/index'
 import { Route as SettingsIndexersIndexRouteImport } from './routes/settings/indexers/index'
 import { Route as SettingsGeneralIndexRouteImport } from './routes/settings/general/index'
 import { Route as SettingsFileHealthIndexRouteImport } from './routes/settings/file-health/index'
+import { Route as SettingsDuplicatesIndexRouteImport } from './routes/settings/duplicates/index'
 import { Route as SettingsDownloadClientsIndexRouteImport } from './routes/settings/download-clients/index'
 import { Route as SeriesSeriesIdIndexRouteImport } from './routes/series/$seriesId/index'
 import { Route as ArcsArcIdIndexRouteImport } from './routes/arcs/$arcId/index'
@@ -61,6 +63,11 @@ const DashboardIndexRoute = DashboardIndexRouteImport.update({
   path: '/dashboard/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const CalendarIndexRoute = CalendarIndexRouteImport.update({
+  id: '/calendar/',
+  path: '/calendar/',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ArcsIndexRoute = ArcsIndexRouteImport.update({
   id: '/arcs/',
   path: '/arcs/',
@@ -93,6 +100,11 @@ const SettingsFileHealthIndexRoute = SettingsFileHealthIndexRouteImport.update({
   path: '/file-health/',
   getParentRoute: () => SettingsRoute,
 } as any)
+const SettingsDuplicatesIndexRoute = SettingsDuplicatesIndexRouteImport.update({
+  id: '/duplicates/',
+  path: '/duplicates/',
+  getParentRoute: () => SettingsRoute,
+} as any)
 const SettingsDownloadClientsIndexRoute =
   SettingsDownloadClientsIndexRouteImport.update({
     id: '/download-clients/',
@@ -114,6 +126,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/settings': typeof SettingsRouteWithChildren
   '/arcs/': typeof ArcsIndexRoute
+  '/calendar/': typeof CalendarIndexRoute
   '/dashboard/': typeof DashboardIndexRoute
   '/pull-list/': typeof PullListIndexRoute
   '/queue/': typeof QueueIndexRoute
@@ -122,6 +135,7 @@ export interface FileRoutesByFullPath {
   '/arcs/$arcId/': typeof ArcsArcIdIndexRoute
   '/series/$seriesId/': typeof SeriesSeriesIdIndexRoute
   '/settings/download-clients/': typeof SettingsDownloadClientsIndexRoute
+  '/settings/duplicates/': typeof SettingsDuplicatesIndexRoute
   '/settings/file-health/': typeof SettingsFileHealthIndexRoute
   '/settings/general/': typeof SettingsGeneralIndexRoute
   '/settings/indexers/': typeof SettingsIndexersIndexRoute
@@ -131,6 +145,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/arcs': typeof ArcsIndexRoute
+  '/calendar': typeof CalendarIndexRoute
   '/dashboard': typeof DashboardIndexRoute
   '/pull-list': typeof PullListIndexRoute
   '/queue': typeof QueueIndexRoute
@@ -139,6 +154,7 @@ export interface FileRoutesByTo {
   '/arcs/$arcId': typeof ArcsArcIdIndexRoute
   '/series/$seriesId': typeof SeriesSeriesIdIndexRoute
   '/settings/download-clients': typeof SettingsDownloadClientsIndexRoute
+  '/settings/duplicates': typeof SettingsDuplicatesIndexRoute
   '/settings/file-health': typeof SettingsFileHealthIndexRoute
   '/settings/general': typeof SettingsGeneralIndexRoute
   '/settings/indexers': typeof SettingsIndexersIndexRoute
@@ -150,6 +166,7 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/settings': typeof SettingsRouteWithChildren
   '/arcs/': typeof ArcsIndexRoute
+  '/calendar/': typeof CalendarIndexRoute
   '/dashboard/': typeof DashboardIndexRoute
   '/pull-list/': typeof PullListIndexRoute
   '/queue/': typeof QueueIndexRoute
@@ -158,6 +175,7 @@ export interface FileRoutesById {
   '/arcs/$arcId/': typeof ArcsArcIdIndexRoute
   '/series/$seriesId/': typeof SeriesSeriesIdIndexRoute
   '/settings/download-clients/': typeof SettingsDownloadClientsIndexRoute
+  '/settings/duplicates/': typeof SettingsDuplicatesIndexRoute
   '/settings/file-health/': typeof SettingsFileHealthIndexRoute
   '/settings/general/': typeof SettingsGeneralIndexRoute
   '/settings/indexers/': typeof SettingsIndexersIndexRoute
@@ -170,6 +188,7 @@ export interface FileRouteTypes {
     | '/'
     | '/settings'
     | '/arcs/'
+    | '/calendar/'
     | '/dashboard/'
     | '/pull-list/'
     | '/queue/'
@@ -178,6 +197,7 @@ export interface FileRouteTypes {
     | '/arcs/$arcId/'
     | '/series/$seriesId/'
     | '/settings/download-clients/'
+    | '/settings/duplicates/'
     | '/settings/file-health/'
     | '/settings/general/'
     | '/settings/indexers/'
@@ -187,6 +207,7 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/arcs'
+    | '/calendar'
     | '/dashboard'
     | '/pull-list'
     | '/queue'
@@ -195,6 +216,7 @@ export interface FileRouteTypes {
     | '/arcs/$arcId'
     | '/series/$seriesId'
     | '/settings/download-clients'
+    | '/settings/duplicates'
     | '/settings/file-health'
     | '/settings/general'
     | '/settings/indexers'
@@ -205,6 +227,7 @@ export interface FileRouteTypes {
     | '/'
     | '/settings'
     | '/arcs/'
+    | '/calendar/'
     | '/dashboard/'
     | '/pull-list/'
     | '/queue/'
@@ -213,6 +236,7 @@ export interface FileRouteTypes {
     | '/arcs/$arcId/'
     | '/series/$seriesId/'
     | '/settings/download-clients/'
+    | '/settings/duplicates/'
     | '/settings/file-health/'
     | '/settings/general/'
     | '/settings/indexers/'
@@ -224,6 +248,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   SettingsRoute: typeof SettingsRouteWithChildren
   ArcsIndexRoute: typeof ArcsIndexRoute
+  CalendarIndexRoute: typeof CalendarIndexRoute
   DashboardIndexRoute: typeof DashboardIndexRoute
   PullListIndexRoute: typeof PullListIndexRoute
   QueueIndexRoute: typeof QueueIndexRoute
@@ -283,6 +308,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DashboardIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/calendar/': {
+      id: '/calendar/'
+      path: '/calendar'
+      fullPath: '/calendar/'
+      preLoaderRoute: typeof CalendarIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/arcs/': {
       id: '/arcs/'
       path: '/arcs'
@@ -325,6 +357,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SettingsFileHealthIndexRouteImport
       parentRoute: typeof SettingsRoute
     }
+    '/settings/duplicates/': {
+      id: '/settings/duplicates/'
+      path: '/duplicates'
+      fullPath: '/settings/duplicates/'
+      preLoaderRoute: typeof SettingsDuplicatesIndexRouteImport
+      parentRoute: typeof SettingsRoute
+    }
     '/settings/download-clients/': {
       id: '/settings/download-clients/'
       path: '/download-clients'
@@ -352,6 +391,7 @@ declare module '@tanstack/react-router' {
 interface SettingsRouteChildren {
   SettingsIndexRoute: typeof SettingsIndexRoute
   SettingsDownloadClientsIndexRoute: typeof SettingsDownloadClientsIndexRoute
+  SettingsDuplicatesIndexRoute: typeof SettingsDuplicatesIndexRoute
   SettingsFileHealthIndexRoute: typeof SettingsFileHealthIndexRoute
   SettingsGeneralIndexRoute: typeof SettingsGeneralIndexRoute
   SettingsIndexersIndexRoute: typeof SettingsIndexersIndexRoute
@@ -362,6 +402,7 @@ interface SettingsRouteChildren {
 const SettingsRouteChildren: SettingsRouteChildren = {
   SettingsIndexRoute: SettingsIndexRoute,
   SettingsDownloadClientsIndexRoute: SettingsDownloadClientsIndexRoute,
+  SettingsDuplicatesIndexRoute: SettingsDuplicatesIndexRoute,
   SettingsFileHealthIndexRoute: SettingsFileHealthIndexRoute,
   SettingsGeneralIndexRoute: SettingsGeneralIndexRoute,
   SettingsIndexersIndexRoute: SettingsIndexersIndexRoute,
@@ -377,6 +418,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   SettingsRoute: SettingsRouteWithChildren,
   ArcsIndexRoute: ArcsIndexRoute,
+  CalendarIndexRoute: CalendarIndexRoute,
   DashboardIndexRoute: DashboardIndexRoute,
   PullListIndexRoute: PullListIndexRoute,
   QueueIndexRoute: QueueIndexRoute,

@@ -11,6 +11,7 @@ const SETTINGS_NAV = [
   { to: '/settings/post-processing', label: 'Post-Download' },
   { to: '/settings/library-import', label: 'Import Library' },
   { to: '/settings/file-health', label: 'File Health' },
+  { to: '/settings/duplicates', label: 'Duplicate Series' },
 ] as const
 
 function SettingsLayout() {

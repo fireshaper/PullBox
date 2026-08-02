@@ -25,6 +25,23 @@ def _set_updated_at(session, _flush_ctx, _instances):
             obj.updated_at = datetime.utcnow()
 
 
+@event.listens_for(Session, "before_flush")
+def _set_norm_title(session, _flush_ctx, _instances):
+    """Keep Series.norm_title in step with Series.title.
+
+    Series rows are created in five places (calendar refresh, scheduler, series
+    add, library import, arc sync). Deriving the column here rather than at each
+    call site means a new one cannot forget it and silently reintroduce the
+    cross-source duplicates this column exists to prevent.
+    """
+    from pullbox.models import Series  # noqa: PLC0415  (avoids an import cycle)
+    from pullbox.services.dedupe import normalize_title  # noqa: PLC0415
+
+    for obj in list(session.new) + list(session.dirty):
+        if isinstance(obj, Series):
+            obj.norm_title = normalize_title(obj.title)
+
+
 def get_engine(settings: Settings | None = None) -> AsyncEngine:
     """Return (or create) the shared async SQLAlchemy engine.
 

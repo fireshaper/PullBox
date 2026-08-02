@@ -426,6 +426,9 @@ class ReleaseSeriesSummary(BaseModel):
     id: int
     title: str
     publisher: str | None
+    # The weekly refresh creates a local Series row for *every* release, so row
+    # existence says nothing about whether the user follows it — this does.
+    subscribed: bool
 
 
 class WeeklyReleaseResponse(BaseModel):
@@ -830,3 +833,97 @@ class FileHealthScanResponse(FileHealthResponse):
 class FileIssueRecheckResponse(BaseModel):
     resolved: bool
     issue: FileIssueResponse | None
+
+
+# ── Duplicate series (Settings → Duplicate Series) ────────────────────────────
+
+
+class DuplicateSeriesRow(BaseModel):
+    id: int
+    metron_id: str | None
+    comicvine_id: str | None
+    title: str
+    publisher: str | None
+    start_year: int | None
+    subscribed: bool
+    auto_download: bool
+    cover_url: str | None
+    issue_count: int
+    downloaded_count: int
+
+
+class DuplicateGroupResponse(BaseModel):
+    key: str
+    title: str
+    # Rows disagree on a non-null start_year — probably distinct volumes sharing
+    # a title, so the group is shown but excluded from merging.
+    conflicting_years: bool
+    mergeable: bool
+    rows: list[DuplicateSeriesRow]
+
+
+class DuplicateScanResponse(BaseModel):
+    groups: list[DuplicateGroupResponse]
+    total_groups: int
+    mergeable_groups: int
+    conflicting_groups: int
+
+
+class MergeRequest(BaseModel):
+    # Explicit ids rather than a group key: the client merges exactly the rows it
+    # showed the user, even if the grouping has shifted since the preview.
+    series_ids: list[int]
+
+
+class MergeResponse(BaseModel):
+    kept_series_id: int
+    removed_series_ids: list[int]
+    issues_moved: int
+    issues_merged: int
+
+
+class MergeAllResponse(BaseModel):
+    merged_groups: int
+    skipped_groups: int
+    issues_moved: int
+    issues_merged: int
+
+
+# ── Calendar ──────────────────────────────────────────────────────────────────
+
+
+class CalendarEntry(BaseModel):
+    issue_id: int
+    issue_number: str
+    title: str | None
+    cover_url: str | None
+    status: str
+    # Status of the issue's most recent DownloadJob, if it has ever had one.
+    # Issue.status never says "failed"; this is where a stalled grab shows up.
+    job_status: str | None
+    release_date: date
+    # Which field the date came from — "cover" means the shelf date is unknown
+    # and the row is only accurate to the month.
+    date_source: str
+    series_id: int
+    series_title: str
+    publisher: str | None
+    subscribed: bool
+    auto_download: bool
+    # Why this entry is on a subscribed calendar: "series", "arc", or both.
+    sources: list[str]
+
+
+class CalendarSummary(BaseModel):
+    total: int
+    # Entries not yet downloaded, downloading, or skipped — i.e. still outstanding.
+    pending: int
+    by_status: dict[str, int]
+
+
+class CalendarResponse(BaseModel):
+    start: date
+    end: date
+    scope: str
+    entries: list[CalendarEntry]
+    summary: CalendarSummary
