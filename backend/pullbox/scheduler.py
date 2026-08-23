@@ -74,6 +74,11 @@ async def register_schedules(scheduler: AsyncScheduler, settings: Settings) -> N
     )
 
 
+def now_utc() -> datetime:
+    """Current UTC time, as an aware datetime."""
+    return datetime.now(tz=timezone.utc)
+
+
 def _parse_time(time_str: str) -> tuple[int, int]:
     """Parse 'HH:MM' string to (hour, minute) ints."""
     parts = time_str.split(":")
@@ -83,7 +88,12 @@ def _parse_time(time_str: str) -> tuple[int, int]:
 async def daily_queue_sweep() -> None:
     """Process all queued/failed jobs whose next_attempt_at is now due.
 
-    Called by APScheduler at the time configured in settings.retry_time.
+    First reconciles 'wanted' issues that have no job working for them, so an issue
+    that was marked wanted without being enqueued still gets picked up here rather
+    than sitting untouched forever.
+
+    Called by APScheduler at the time configured in settings.retry_time, and once on
+    startup to recover a window missed while PullBox was down.
     Opens its own database session — does not use FastAPI dependency injection.
     """
     from sqlalchemy import select
@@ -91,7 +101,7 @@ async def daily_queue_sweep() -> None:
     import pullbox.database as db_module
     import pullbox.deps as deps_module
     from pullbox.models import DownloadJob  # noqa: PLC0415
-    from pullbox.services.queue import process_job  # noqa: PLC0415
+    from pullbox.services.queue import enqueue_orphaned_wanted, process_job  # noqa: PLC0415
 
     if db_module.AsyncSessionLocal is None:
         logger.warning("daily_queue_sweep: database not initialized, skipping run")
@@ -99,6 +109,14 @@ async def daily_queue_sweep() -> None:
 
     settings = deps_module.get_settings()
     now = datetime.now(tz=timezone.utc)
+
+    async with db_module.AsyncSessionLocal() as db:
+        try:
+            await enqueue_orphaned_wanted(db)
+            await db.commit()
+        except Exception:
+            logger.exception("daily_queue_sweep: error reconciling orphaned wanted issues")
+            await db.rollback()
 
     async with db_module.AsyncSessionLocal() as db:
         result = await db.execute(
@@ -423,54 +441,79 @@ async def poll_download_clients() -> None:
         logger.warning("poll_download_clients: database not initialized, skipping run")
         return
 
-    # Load active downloading jobs, enabled clients, and post-processing config in one pass
-    async with db_module.AsyncSessionLocal() as db:
-        result = await db.execute(
-            select(DownloadJob).where(
-                DownloadJob.status == "downloading",
-                DownloadJob.client_job_id.isnot(None),
+    # Load active downloading jobs, enabled clients, and post-processing config in one pass.
+    # Anything raising in here used to abort the whole run with no trace in any PullBox
+    # log file — APScheduler catches job exceptions and reports them on its own logger.
+    try:
+        async with db_module.AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(DownloadJob).where(
+                    DownloadJob.status == "downloading",
+                    DownloadJob.client_job_id.isnot(None),
+                )
             )
-        )
-        jobs_snapshot = [
-            (j.id, j.client_job_id, j.download_client_type, j.attempts)
-            for j in result.scalars().all()
-        ]
+            jobs_snapshot = [
+                (j.id, j.client_job_id, j.download_client_type, j.attempts, j.last_attempt_at)
+                for j in result.scalars().all()
+            ]
 
-        # Index first enabled client per type for credential lookup
-        dc_result = await db.execute(
-            select(DownloadClient).where(DownloadClient.enabled == True)  # noqa: E712
-        )
-        clients_by_type: dict[str, DownloadClient] = {}
-        for dc in dc_result.scalars().all():
-            if dc.type not in clients_by_type:
-                clients_by_type[dc.type] = dc
-
-        # The library root may be overridden in the DB (Settings → General); read
-        # it here while the session is open, falling back to the config file.
-        library_root = await resolve_library_path(db, deps_module.get_settings().library_path)
-
-        # Snapshot post-processing config into a detached holder (session closes below).
-        pp_row = (
-            await db.execute(select(PostProcessingSettings).limit(1))
-        ).scalar_one_or_none()
-        pp_cfg = (
-            SimpleNamespace(
-                enabled=pp_row.enabled,
-                operation=pp_row.operation,
-                destination_root=pp_row.destination_root,
-                folder_pattern=pp_row.folder_pattern,
-                file_pattern=pp_row.file_pattern,
-                delete_empty_folder=pp_row.delete_empty_folder,
+            # Index first enabled client per type for credential lookup
+            dc_result = await db.execute(
+                select(DownloadClient).where(DownloadClient.enabled == True)  # noqa: E712
             )
-            if pp_row is not None
-            else None
-        )
+            clients_by_type: dict[str, DownloadClient] = {}
+            for dc in dc_result.scalars().all():
+                if dc.type not in clients_by_type:
+                    clients_by_type[dc.type] = dc
 
-    if not jobs_snapshot:
+            # The library root may be overridden in the DB (Settings → General); read
+            # it here while the session is open, falling back to the config file.
+            library_root = await resolve_library_path(db, deps_module.get_settings().library_path)
+
+            # Snapshot post-processing config into a detached holder (session closes below).
+            pp_row = (
+                await db.execute(select(PostProcessingSettings).limit(1))
+            ).scalar_one_or_none()
+            pp_cfg = (
+                SimpleNamespace(
+                    enabled=pp_row.enabled,
+                    operation=pp_row.operation,
+                    destination_root=pp_row.destination_root,
+                    folder_pattern=pp_row.folder_pattern,
+                    file_pattern=pp_row.file_pattern,
+                    delete_empty_folder=pp_row.delete_empty_folder,
+                )
+                if pp_row is not None
+                else None
+            )
+
+    except Exception:
+        logger.exception(
+            "poll_download_clients: failed while loading jobs/clients/settings; "
+            "no downloads will be checked this run"
+        )
         return
 
-    for job_id, client_job_id, client_type, _attempts in jobs_snapshot:
+    if not jobs_snapshot:
+        logger.debug("poll_download_clients: no jobs in 'downloading' state; nothing to check")
+        return
+
+    logger.info(
+        "poll_download_clients: checking %d download(s) against %s",
+        len(jobs_snapshot),
+        ", ".join(sorted(clients_by_type)) or "no enabled clients",
+    )
+
+    grace = timedelta(minutes=deps_module.get_settings().download_missing_grace_minutes)
+
+    for job_id, client_job_id, client_type, _attempts, last_attempt_at in jobs_snapshot:
         if client_type not in clients_by_type:
+            logger.warning(
+                "poll_download_clients: job %d references download client type %r, which has "
+                "no enabled configuration — it cannot be polled and will stay 'downloading'",
+                job_id,
+                client_type,
+            )
             continue
 
         dc = clients_by_type[client_type]
@@ -506,6 +549,24 @@ async def poll_download_clients() -> None:
             client_job_id,
             status,
         )
+
+        if status == "missing":
+            # The client has no record of this job. Give a freshly-dispatched NZB
+            # time to surface first; only past the grace period is it really gone.
+            age_from = last_attempt_at or now_utc()
+            if age_from.tzinfo is None:
+                age_from = age_from.replace(tzinfo=timezone.utc)
+            if now_utc() - age_from < grace:
+                continue
+            logger.warning(
+                "poll_download_clients: %s has no record of job %d (client job %s) after %s; "
+                "failing it so it is retried instead of sitting in 'downloading'",
+                client_type,
+                job_id,
+                client_job_id,
+                grace,
+            )
+            status = "failed"
 
         if status not in ("completed", "failed"):
             continue  # still downloading — nothing to update

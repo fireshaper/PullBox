@@ -9,7 +9,11 @@ from pullbox.models import Base
 config = context.config
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # disable_existing_loggers must stay False. The app runs migrations inside its
+    # lifespan (main.py) *after* configure_logging() has wired up the pullbox
+    # loggers; the default True would flip .disabled on every one of them, silently
+    # dropping all application, search and import logging for the process lifetime.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 

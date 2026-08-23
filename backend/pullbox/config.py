@@ -57,6 +57,11 @@ class Settings(BaseSettings):
     # between a client finishing a file and PullBox moving it into the library,
     # so keep it low — each poll is only a couple of local API calls per job.
     download_poll_interval_minutes: int = 1
+    # Grace period before a job the download client has no record of is given up
+    # on. A freshly-submitted NZB can take a moment to surface in the queue, so
+    # "missing" is only trusted once the job has been out for this long; after
+    # that it is failed and retried rather than sitting in 'downloading' forever.
+    download_missing_grace_minutes: int = 30
     # Background ComicVine backfill for imported issues: how often a batch runs
     # and how many un-synced issues to sample per batch (see sync_imported_issues).
     import_sync_interval_minutes: int = 5

@@ -33,6 +33,15 @@ APP_LOGGER = "pullbox"
 SEARCH_LOGGER = "pullbox.search"
 IMPORT_LOGGER = "pullbox.library_import"
 
+# APScheduler logs its own job failures and misfires on this logger, not on any
+# pullbox.* one. Left alone it propagates to the root logger, which alembic.ini
+# points at stderr — so when PullBox runs as a service, a scheduled job that
+# raises (poll_download_clients, the queue sweep) fails completely silently and
+# nothing lands in any log file. Route it into the application log at WARNING:
+# high enough to skip routine per-run chatter, low enough to catch every
+# misfire and job exception.
+SCHEDULER_LOGGER = "apscheduler"
+
 _LOG_FORMAT = "%(asctime)s %(levelname)-8s %(name)s: %(message)s"
 _DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
@@ -95,6 +104,20 @@ def configure_logging(settings: Settings, *, force: bool = False) -> Path:
         lg.addHandler(_file_handler(path, formatter))
         if console not in lg.handlers:
             lg.addHandler(console)
+
+    # Send APScheduler's job-failure output to the application log too. It gets its
+    # own handler instance because RotatingFileHandler must not be shared across
+    # loggers that rotate independently.
+    sched_log = logging.getLogger(SCHEDULER_LOGGER)
+    sched_log.setLevel(logging.WARNING)
+    sched_log.propagate = False
+    for existing in list(sched_log.handlers):
+        if isinstance(existing, RotatingFileHandler):
+            sched_log.removeHandler(existing)
+            existing.close()
+    sched_log.addHandler(_file_handler(log_dir / "pullbox.log", formatter))
+    if console not in sched_log.handlers:
+        sched_log.addHandler(console)
 
     _configured = True
     logging.getLogger(APP_LOGGER).debug("Logging configured; log_dir=%s", log_dir)

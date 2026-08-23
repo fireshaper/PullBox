@@ -605,3 +605,123 @@ def test_daily_sweep_skips_future_jobs(client, seeded):
     status, attempts = asyncio.run(_check())
     assert status == "queued"   # unchanged
     assert attempts == 0         # not processed
+
+
+# ── Reconciling 'wanted' issues that have no job ─────────────────────────────
+
+
+def _seed_issue_with_jobs(client, *, issue_status, job_specs):
+    """Create one series + one issue with the given jobs. Returns the issue id.
+
+    job_specs is a list of (status, next_attempt_at) tuples; an empty list leaves
+    the issue with no jobs at all.
+    """
+    from pullbox.database import AsyncSessionLocal
+    from pullbox.models import DownloadJob, Issue, Series
+
+    async def _run():
+        async with AsyncSessionLocal() as db:
+            series = Series(title="Reconcile Test", comicvine_id="99001")
+            db.add(series)
+            await db.flush()
+            issue = Issue(series_id=series.id, issue_number="1", status=issue_status)
+            db.add(issue)
+            await db.flush()
+            for status, next_attempt_at in job_specs:
+                db.add(
+                    DownloadJob(
+                        issue_id=issue.id,
+                        source_type="usenet",
+                        status=status,
+                        attempts=1,
+                        next_attempt_at=next_attempt_at,
+                    )
+                )
+            await db.commit()
+            return issue.id
+
+    return asyncio.run(_run())
+
+
+def _reconcile():
+    from pullbox.database import AsyncSessionLocal
+    from pullbox.services.queue import enqueue_orphaned_wanted
+
+    async def _run():
+        async with AsyncSessionLocal() as db:
+            created = await enqueue_orphaned_wanted(db)
+            await db.commit()
+            return created
+
+    return asyncio.run(_run())
+
+
+def test_reconcile_enqueues_wanted_issue_with_no_job(client):
+    """A 'wanted' issue that was never enqueued gets a job.
+
+    This is the arc-sync / library-rescan case: those paths set status='wanted'
+    without creating a DownloadJob, and the sweep only walks existing jobs.
+    """
+    issue_id = _seed_issue_with_jobs(client, issue_status="wanted", job_specs=[])
+
+    created = _reconcile()
+
+    assert len(created) == 1
+
+    from pullbox.database import AsyncSessionLocal
+    from pullbox.models import DownloadJob
+
+    async def _check():
+        async with AsyncSessionLocal() as db:
+            job = await db.get(DownloadJob, created[0])
+            return job.issue_id, job.status
+
+    assert asyncio.run(_check()) == (issue_id, "queued")
+
+
+def test_reconcile_skips_issue_with_backing_off_job(client):
+    """A 'failed' job mid-backoff is still the queue's work — don't duplicate it.
+
+    'failed' is not in ACTIVE_STATUSES, so a naive active-job check would create a
+    second job for an issue that is simply waiting for its next attempt.
+    """
+    future = datetime.now(tz=timezone.utc) + timedelta(days=3)
+    _seed_issue_with_jobs(client, issue_status="wanted", job_specs=[("failed", future)])
+
+    assert _reconcile() == []
+
+
+def test_reconcile_skips_issue_that_exhausted_retries(client):
+    """A 'failed' job with next_attempt_at=None gave up deliberately; leave it alone.
+
+    Re-enqueuing would reset attempts to 0 and silently defeat max_retries.
+    """
+    _seed_issue_with_jobs(client, issue_status="wanted", job_specs=[("failed", None)])
+
+    assert _reconcile() == []
+
+
+def test_reconcile_enqueues_when_only_completed_jobs_exist(client):
+    """A previously-downloaded issue flipped back to 'wanted' is re-enqueued.
+
+    This is the library-rescan case: the file went missing, so the completed job is
+    history and the issue needs fetching again.
+    """
+    _seed_issue_with_jobs(client, issue_status="wanted", job_specs=[("completed", None)])
+
+    assert len(_reconcile()) == 1
+
+
+def test_reconcile_ignores_non_wanted_issues(client):
+    """Only 'wanted' issues are reconciled — skipped/downloaded are left alone."""
+    _seed_issue_with_jobs(client, issue_status="skipped", job_specs=[])
+
+    assert _reconcile() == []
+
+
+def test_reconcile_is_idempotent(client):
+    """Running twice does not create a second job for the same issue."""
+    _seed_issue_with_jobs(client, issue_status="wanted", job_specs=[])
+
+    assert len(_reconcile()) == 1
+    assert _reconcile() == []

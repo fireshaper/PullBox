@@ -121,7 +121,12 @@ def seeded(client):
         app.dependency_overrides.pop(get_metadata_provider, None)
 
     issues = client.get(f"/api/series/{series_id}/issues").json()
-    client.post(f"/api/issues/{issues[0]['id']}/want")
+    # /want fires a detached run_job_now task. With no indexers configured the
+    # search finds nothing and it flips the job to 'failed' — at an arbitrary
+    # moment, racing every test below that drives a job through the poller by
+    # hand. Stub the dispatch out; these tests set up their own job state.
+    with patch("pullbox.routers.issues.run_job_now", new=AsyncMock(return_value=None)):
+        client.post(f"/api/issues/{issues[0]['id']}/want")
     return series_id, issues
 
 
@@ -233,12 +238,16 @@ def test_get_job_status_deleted_returns_failed():
     assert result == "failed"
 
 
-def test_get_job_status_unknown_when_not_found():
-    """If NZBID is not in listgroups or history, return 'unknown'."""
+def test_get_job_status_missing_when_not_found():
+    """If NZBID is not in listgroups or history, return 'missing'.
+
+    'missing' means NZBGet answered and has no such job — the poller retires it.
+    A failed call still returns 'unknown', which means 'keep waiting'.
+    """
     transport = _NZBGetMockTransport([[], []])
     client = _make_nzbget(transport)
     result = asyncio.run(client.get_job_status("999"))
-    assert result == "unknown"
+    assert result == "missing"
 
 
 def test_nzbget_get_completed_path_returns_destdir():
@@ -360,6 +369,74 @@ def test_sabnzbd_get_job_status_completed_from_history():
 
     result = asyncio.run(client.get_job_status("SABnzb+xyz"))
     assert result == "completed"
+
+
+def test_sabnzbd_get_job_status_filters_history_by_nzo_id():
+    """History is queried with nzo_ids, not scanned — SABnzbd only returns 10 slots by default.
+
+    Regression: an unfiltered ``mode=history`` silently omits any job that
+    finished more than a few downloads ago, which left the job stuck at
+    'downloading' forever.
+    """
+    transport = _SABnzbdMockTransport([
+        {"queue": {"slots": []}},
+        {"history": {"slots": [{"nzo_id": "SABnzb+old", "status": "Completed"}]}},
+    ])
+    client = _make_sabnzbd(transport)
+
+    assert asyncio.run(client.get_job_status("SABnzb+old")) == "completed"
+    history_req = transport.requests[1]
+    assert history_req["mode"] == "history"
+    assert history_req["nzo_ids"] == "SABnzb+old"
+
+
+def test_sabnzbd_get_job_status_falls_back_to_limited_scan():
+    """If nzo_ids comes back empty (old SABnzbd ignores it), retry with an explicit limit."""
+    transport = _SABnzbdMockTransport([
+        {"queue": {"slots": []}},
+        {"history": {"slots": []}},  # nzo_ids unsupported → empty
+        {"history": {"slots": [{"nzo_id": "SABnzb+old", "status": "Completed"}]}},
+    ])
+    client = _make_sabnzbd(transport)
+
+    assert asyncio.run(client.get_job_status("SABnzb+old")) == "completed"
+    assert int(transport.requests[2]["limit"]) > 10
+
+
+def test_sabnzbd_get_job_status_missing_when_absent_everywhere():
+    """Not in queue and not in history → 'missing', distinct from an in-progress job."""
+    transport = _SABnzbdMockTransport([
+        {"queue": {"slots": []}},
+        {"history": {"slots": []}},
+    ])
+    client = _make_sabnzbd(transport)
+
+    assert asyncio.run(client.get_job_status("SABnzb+purged")) == "missing"
+
+
+@pytest.mark.parametrize("raw", ["Extracting", "Repairing", "Verifying", "Moving", "Running"])
+def test_sabnzbd_get_job_status_post_processing_is_not_terminal(raw):
+    """Post-processing states in history mean 'still working', not 'unknown'."""
+    transport = _SABnzbdMockTransport([
+        {"queue": {"slots": []}},
+        {"history": {"slots": [{"nzo_id": "SABnzb+xyz", "status": raw}]}},
+    ])
+    client = _make_sabnzbd(transport)
+
+    assert asyncio.run(client.get_job_status("SABnzb+xyz")) == "downloading"
+
+
+def test_sabnzbd_get_job_status_propagates_api_errors():
+    """A transport error must raise, not look like a missing job."""
+
+    class _Boom(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request):
+            raise httpx.ConnectError("refused")
+
+    client = SABnzbdClient("localhost", 8085, "k", transport=_Boom())
+
+    with pytest.raises(httpx.ConnectError):
+        asyncio.run(client.get_job_status("SABnzb+xyz"))
 
 
 def test_sabnzbd_get_completed_path_returns_storage():
@@ -848,6 +925,88 @@ def test_poll_marks_failed_job_and_requeues_issue(client, seeded):
     expected = now + timedelta(days=1)
     assert naa is not None
     assert abs((naa.replace(tzinfo=timezone.utc) - expected).total_seconds()) < 30
+
+
+def _seed_missing_job(seeded, last_attempt_at):
+    """Create a 'downloading' job whose client has no record of it."""
+    from pullbox.database import AsyncSessionLocal
+    from pullbox.models import DownloadJob
+    from pullbox.services.queue import enqueue_issue
+
+    _, issues = seeded
+    wanted_id = issues[0]["id"]
+    _seed_nzbget_client()
+
+    async def _setup():
+        async with AsyncSessionLocal() as db:
+            job, _ = await enqueue_issue(wanted_id, db)
+            await db.commit()
+            job_id = job.id
+        async with AsyncSessionLocal() as db:
+            job_obj = await db.get(DownloadJob, job_id)
+            job_obj.status = "downloading"
+            job_obj.client_job_id = "nzb-vanished-1"
+            job_obj.download_client_type = "nzbget"
+            job_obj.attempts = 1
+            job_obj.last_attempt_at = last_attempt_at
+            await db.commit()
+        return job_id
+
+    return wanted_id, asyncio.run(_setup())
+
+
+def test_poll_fails_job_the_client_has_lost_after_grace(client, seeded):
+    """A job the client no longer knows about is failed once the grace period passes.
+
+    Without this it sits in 'downloading' forever: SABnzbd eventually purges
+    completed jobs from history, and 'not found' used to be indistinguishable
+    from 'still working'.
+    """
+    from pullbox.database import AsyncSessionLocal
+    from pullbox.models import DownloadJob, Issue
+    from pullbox.scheduler import poll_download_clients
+
+    stale = datetime.now(tz=timezone.utc) - timedelta(hours=6)
+    wanted_id, job_id = _seed_missing_job(seeded, stale)
+
+    with patch(
+        "pullbox.clients.nzbget.NZBGetClient.get_job_status",
+        new=AsyncMock(return_value="missing"),
+    ):
+        asyncio.run(poll_download_clients())
+
+    async def _check():
+        async with AsyncSessionLocal() as db:
+            return (
+                (await db.get(DownloadJob, job_id)).status,
+                (await db.get(Issue, wanted_id)).status,
+            )
+
+    jstatus, istatus = asyncio.run(_check())
+    assert jstatus == "failed"
+    assert istatus == "wanted"
+
+
+def test_poll_keeps_recently_dispatched_missing_job(client, seeded):
+    """Inside the grace period a missing job is left alone — SABnzbd may still be fetching it."""
+    from pullbox.database import AsyncSessionLocal
+    from pullbox.models import DownloadJob
+    from pullbox.scheduler import poll_download_clients
+
+    fresh = datetime.now(tz=timezone.utc) - timedelta(minutes=1)
+    _wanted_id, job_id = _seed_missing_job(seeded, fresh)
+
+    with patch(
+        "pullbox.clients.nzbget.NZBGetClient.get_job_status",
+        new=AsyncMock(return_value="missing"),
+    ):
+        asyncio.run(poll_download_clients())
+
+    async def _check():
+        async with AsyncSessionLocal() as db:
+            return (await db.get(DownloadJob, job_id)).status
+
+    assert asyncio.run(_check()) == "downloading"
 
 
 def test_poll_skips_still_downloading_jobs(client, seeded):

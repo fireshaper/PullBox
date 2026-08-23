@@ -79,9 +79,19 @@ class NZBGetClient(BaseDownloadClient):
                     raw = item.get("Status", "")
                     return _STATUS_MAP.get(raw, "unknown")
 
+            # Absent from both lists: NZBGet has no record of this job (history
+            # purged, or removed by hand). Distinct from the error path below —
+            # the caller retires a 'missing' job instead of waiting on it forever.
+            logger.warning(
+                "NZBGet job %s is in neither listgroups nor history — treating as missing",
+                job_id,
+            )
+            return "missing"
+
         except Exception:
             logger.warning("NZBGetClient.get_job_status failed for job %s", job_id, exc_info=True)
 
+        # The call failed, so we know nothing — keep waiting and retry next poll.
         return "unknown"
 
     async def get_completed_path(self, job_id: str) -> str | None:

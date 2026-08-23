@@ -24,6 +24,18 @@ body {
   0% { left: -40%; }
   100% { left: 100%; }
 }
+/* Job rows that link through to their series. The negative inline margin lets the
+   hover highlight breathe past the text without shifting the column's alignment. */
+.pb-job-row {
+  padding-inline: 6px;
+  margin-inline: -6px;
+  border-radius: 6px;
+  transition: background-color 120ms ease;
+}
+.pb-job-row:hover {
+  background-color: var(--color-border);
+}
+
 .pb-indeterminate-bar {
   position: absolute;
   top: 0;

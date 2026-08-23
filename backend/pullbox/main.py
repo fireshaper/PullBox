@@ -45,7 +45,7 @@ def _run_migrations() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from pullbox.logging_config import configure_logging
-    from pullbox.scheduler import build_scheduler, register_schedules
+    from pullbox.scheduler import build_scheduler, daily_queue_sweep, register_schedules
 
     deps._settings = Settings()
 
@@ -77,6 +77,15 @@ async def lifespan(app: FastAPI):
         await register_schedules(scheduler, deps._settings)
         await scheduler.start_in_background()
         logger.info("Database ready, scheduler started")
+        # Catch up on a retry window missed while PullBox was down. The sweep is a
+        # CronTrigger registered with ConflictPolicy.replace, so each startup rewrites
+        # the schedule row and re-arms next_fire_time from now — any missed 06:00 is
+        # discarded, not deferred. Without this the queue only ever advances if the
+        # process happens to be up at exactly that minute.
+        # Reference held for the app's lifetime: asyncio only weakly tracks tasks, and
+        # this one awaits network searches for minutes, so a bare create_task can be
+        # garbage-collected mid-sweep.
+        app.state.startup_sweep = asyncio.create_task(daily_queue_sweep())
         yield
         logger.info("PullBox shutting down")
 

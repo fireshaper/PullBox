@@ -65,6 +65,59 @@ async def enqueue_issue(issue_id: int, db: AsyncSession) -> tuple[DownloadJob, b
     return job, True
 
 
+async def enqueue_orphaned_wanted(db: AsyncSession) -> list[int]:
+    """Create jobs for 'wanted' issues that have no job working on their behalf.
+
+    Marking an issue wanted and enqueuing it are separate steps, and several paths
+    set 'wanted' without ever enqueuing: arc sync creates new issues that way, and a
+    library rescan flips an issue back to wanted when its file goes missing. Nothing
+    else reconciles those — the sweep only walks existing DownloadJob rows — so they
+    sit wanted forever. This closes that gap.
+
+    An issue is only re-enqueued when every job it has is 'completed' (or it has
+    none). Any 'failed' job means the queue is still deliberately handling it: with a
+    next_attempt_at it is mid-backoff, and with a NULL one it exhausted max_retries
+    and is meant to stay stopped. Enqueuing in either case would duplicate the job or
+    silently defeat the retry cap.
+
+    Returns the ids of newly created jobs.
+    """
+    blocking = ACTIVE_STATUSES | {"failed"}
+    rows = (
+        await db.execute(
+            select(Issue.id).where(
+                Issue.status == "wanted",
+                ~select(DownloadJob.id)
+                .where(
+                    DownloadJob.issue_id == Issue.id,
+                    DownloadJob.status.in_(blocking),
+                )
+                .exists(),
+            )
+        )
+    ).scalars().all()
+
+    created_ids: list[int] = []
+    for issue_id in rows:
+        try:
+            job, created = await enqueue_issue(issue_id, db)
+        except ValueError:
+            logger.warning(
+                "enqueue_orphaned_wanted: could not enqueue issue %d", issue_id, exc_info=True
+            )
+            continue
+        if created:
+            created_ids.append(job.id)
+
+    if created_ids:
+        await db.flush()
+        logger.info(
+            "enqueue_orphaned_wanted: enqueued %d wanted issue(s) that had no active job",
+            len(created_ids),
+        )
+    return created_ids
+
+
 async def process_job(job_id: int, db: AsyncSession, settings: Settings) -> None:
     """Run one processing cycle for a queued or failed job.
 

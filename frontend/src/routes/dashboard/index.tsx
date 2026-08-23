@@ -426,8 +426,15 @@ function CompactJobRow({
   job: Job
   right: React.ReactNode
 }) {
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '5px 0' }}>
+  const rowStyle: React.CSSProperties = {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '10px',
+    padding: '5px 0',
+  }
+
+  const body = (
+    <>
       <Cover url={job.issue?.cover_url ?? null} size={28} />
       <div style={{ flex: 1, minWidth: 0 }}>
         <div
@@ -444,7 +451,24 @@ function CompactJobRow({
         </div>
       </div>
       {right}
-    </div>
+    </>
+  )
+
+  // A job whose issue row has since been deleted has no series to navigate to.
+  if (!job.issue) {
+    return <div style={rowStyle}>{body}</div>
+  }
+
+  return (
+    <Link
+      to="/series/$seriesId"
+      params={{ seriesId: String(job.issue.series_id) }}
+      title={`${job.issue.series_title} #${job.issue.issue_number}`}
+      className="pb-job-row"
+      style={{ ...rowStyle, color: 'inherit', textDecoration: 'none' }}
+    >
+      {body}
+    </Link>
   )
 }
 

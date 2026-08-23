@@ -490,35 +490,35 @@ function SeriesDetailPage() {
             {series.title}
           </h1>
 
-          {meta && (
-            <div style={{ fontSize: '0.875rem', color: 'var(--color-muted)', marginBottom: '14px' }}>
-              {meta}
-            </div>
-          )}
+          {/* Publisher · year. Always occupies its line, even before enrich has
+              filled it in, so it cannot shove the controls below it. */}
+          <div
+            style={{
+              fontSize: '0.875rem',
+              color: 'var(--color-muted)',
+              marginBottom: '14px',
+              minHeight: '1.4em',
+            }}
+          >
+            {meta}
+          </div>
 
-          {series.description ? (
-            <div
-              style={{
-                fontSize: '0.875rem',
-                color: 'var(--color-text)',
-                lineHeight: 1.6,
-                marginBottom: '24px',
-                maxWidth: '600px',
-                display: '-webkit-box',
-                WebkitLineClamp: 6,
-                WebkitBoxOrient: 'vertical',
-                overflow: 'hidden',
-              }}
-              dangerouslySetInnerHTML={{ __html: series.description }}
-            />
-          ) : enrichMutation.isPending ? (
-            <div style={{ fontSize: '0.875rem', color: 'var(--color-muted)', marginBottom: '24px' }}>
-              Loading metadata…
-            </div>
-          ) : null}
-
-          {/* Subscribe / auto-download */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
+          {/* Subscribe / auto-download.
+              Deliberately above the description: the description arrives late from
+              the async enrich, and when it replaced the "Loading metadata…" line it
+              shoved these controls ~150px down — landing a click that was already
+              aimed at the button on the description text instead, which is why
+              subscribing appeared to need two clicks. Nothing above this row
+              changes height now, so it stays put. */}
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '16px',
+              flexWrap: 'wrap',
+              marginBottom: '20px',
+            }}
+          >
             <button
               onClick={() => subscribeMutation.mutate(!series.subscribed)}
               disabled={subscribeMutation.isPending}
@@ -557,6 +557,26 @@ function SeriesDetailPage() {
               </label>
             )}
           </div>
+
+          {series.description ? (
+            <div
+              style={{
+                fontSize: '0.875rem',
+                color: 'var(--color-text)',
+                lineHeight: 1.6,
+                maxWidth: '600px',
+                display: '-webkit-box',
+                WebkitLineClamp: 6,
+                WebkitBoxOrient: 'vertical',
+                overflow: 'hidden',
+              }}
+              dangerouslySetInnerHTML={{ __html: series.description }}
+            />
+          ) : enrichMutation.isPending ? (
+            <div style={{ fontSize: '0.875rem', color: 'var(--color-muted)' }}>
+              Loading metadata…
+            </div>
+          ) : null}
         </div>
       </div>
 
