@@ -4,12 +4,26 @@ A self-hosted comic book acquisition manager. Subscribe to series, see what's re
 
 ---
 
+## What's inside
+
+| Page | What it does |
+|---|---|
+| **Dashboard** | Landing page — live download activity, queue health, library stats, sync status, and this week's pull |
+| **Pull List** | Upcoming releases for the current week plus the next *N* weeks; download any issue on the spot |
+| **Calendar** | Sonarr-style date grid of upcoming issues, showing which ones PullBox will grab |
+| **Series** | Search, subscribe, sync issue lists, mark issues wanted |
+| **Story Arcs** | Browse arcs, subscribe to one, and let PullBox fill in the members you're missing |
+| **Queue** | Active, pending and failed jobs with full retry history |
+| **Settings** | Indexers, download clients, library import, post-processing, file health, duplicate series, general |
+
+---
+
 ## Prerequisites
 
 - **Docker** and **Docker Compose** (V2 — `docker compose`)
-- A **ComicVine API key** — free, get one at [comicvine.gamespot.com/api/documentation](https://comicvine.gamespot.com/api/documentation/)
-- A **Newznab indexer** (e.g. NZBGeek, DrunkenSlug) and/or a **Prowlarr/Jackett** instance for search
-- **NZBGet** or **SABnzbd** as your download client
+- **A metadata account** — [Metron](https://metron.cloud/accounts/register/) (free, recommended) and/or a [ComicVine API key](https://comicvine.gamespot.com/api/documentation/). See [Metadata Sources](#metadata-sources).
+- **At least one indexer** — a Newznab indexer (NZBGeek, DrunkenSlug), NZBHydra2, Prowlarr, or Jackett
+- **A download client** — NZBGet or SABnzbd for Usenet, qBittorrent for torrents
 
 ---
 
@@ -23,24 +37,24 @@ cd pullbox
 cp .env.example .env
 ```
 
-Edit `.env` and fill in your values:
+Edit `.env`:
 
 ```env
 TZ=America/New_York
 COMICS_PATH=/your/comics/library    # host path where files are saved
 PULLBOX_SECRET_KEY=                 # run: openssl rand -hex 32
-PULLBOX_COMICVINE_API_KEY=          # from comicvine.gamespot.com
+PULLBOX_METRON_USERNAME=            # your metron.cloud login
+PULLBOX_METRON_PASSWORD=
+PULLBOX_COMICVINE_API_KEY=          # optional fallback
 ```
 
 ### 2. (Optional) Edit the config file
-
-For advanced settings, copy the example config:
 
 ```bash
 cp config/config.example.yaml config/config.yaml
 ```
 
-The defaults work out of the box. You only need to edit this if you want to change the database path, retry schedule, or lookahead weeks. Settings in `config.yaml` are overridden by any `PULLBOX_*` environment variable.
+The defaults work out of the box. Anything in `config.yaml` is overridden by the matching `PULLBOX_*` environment variable, so keep secrets in `.env` and everything else here.
 
 ### 3. Start the container
 
@@ -48,9 +62,40 @@ The defaults work out of the box. You only need to edit this if you want to chan
 docker compose up -d
 ```
 
-Open **http://localhost:8585** in your browser.
+Open **http://localhost:8585**. The database is created automatically at `config/pullbox.db`.
 
-The database is created automatically on first start at `config/pullbox.db`.
+---
+
+## Metadata Sources
+
+PullBox reads series, issue, arc and release metadata through a provider layer with **one primary source and one fallback**.
+
+### Metron (default primary)
+
+[Metron](https://metron.cloud/) is a community-run comic database. It needs a **registered account** — PullBox authenticates with your login username and password over HTTP Basic auth, *not* an API key. Register at [metron.cloud/accounts/register/](https://metron.cloud/accounts/register/), then set:
+
+```yaml
+metron_username: "your-username"
+metron_password: "your-password"
+metadata_provider: "metron"
+```
+
+Metron enforces two independent caps on an account: roughly **20 requests/minute** and **5000/day**. PullBox throttles itself below both (`metron_rate_limit_per_min`, `metron_rate_limit_per_day`) using a single process-wide limiter, and backs off when Metron returns a 429.
+
+### ComicVine
+
+Still fully supported. Set `comicvine_api_key` and, if you want it in charge, `metadata_provider: "comicvine"`. ComicVine's own limit is ~200 requests/hour, which PullBox stays under via `comicvine_rate_limit_per_hour`.
+
+### How the two interact
+
+Configure both and the secondary becomes an automatic fallback:
+
+- **Search and weekly releases** fall back to the other source when the primary errors — and, for search, when it returns nothing.
+- **Id-based lookups** (a specific volume, issue, or arc) can't blindly fall back, because a Metron id means nothing to ComicVine. They *route* to whichever source the record actually has an id for, preferring the primary, and try the other only if that one errors and the second id exists.
+
+Every record PullBox stores carries **both** `metron_id` and `comicvine_id` where known, so a series added from one source stays matchable against the other.
+
+> **Switching sources on an existing library:** records added under ComicVine keep only their `comicvine_id` — turning Metron on does not backfill Metron ids for them. They keep working through the routing above. Because the two id spaces are separate, adding the same series again from the other source creates a second row; **Settings → Duplicate Series** finds and merges those.
 
 ---
 
@@ -58,34 +103,44 @@ The database is created automatically on first start at `config/pullbox.db`.
 
 ### Add indexers
 
-Go to **Settings → Indexers** and add at least one search source:
+**Settings → Indexers**, add at least one:
 
 | Type | What it is |
 |---|---|
-| `newznab` | Direct Newznab/NZBHydra2 Usenet indexer |
+| `newznab` | Direct Newznab Usenet indexer |
+| `nzbhydra2` | NZBHydra2 Usenet meta-aggregator |
 | `prowlarr` | Prowlarr aggregator (torrent + Usenet) |
 | `jackett` | Jackett torrent aggregator |
 
-For Newznab indexers you can click **Test** to verify the connection.
+Each has a **Test** button. `priority` decides the order results are preferred in; `usenet_retention_days` lets PullBox skip releases older than your provider's retention.
 
-### Configure your download client
+### Configure a download client
 
-Go to **Settings → Download Clients** and add NZBGet or SABnzbd with the host, port, and credentials.
+**Settings → Download Clients** — NZBGet, SABnzbd, or qBittorrent, with host, port and credentials.
 
 ### Subscribe to a series
 
-1. Go to **Series** and search for a title (powered by ComicVine)
-2. Click a result to add it to your library
-3. On the series page, click **Sync Issues** to pull the full issue list
-4. Toggle **Subscribe** to auto-download new issues, or mark individual issues as **Wanted** to queue them manually
+1. **Series** → search for a title
+2. Click a result to add it
+3. Click **Sync Series** to pull the full issue list
+4. Toggle **Subscribe** for auto-download, or mark individual issues **Wanted**
 
-### See what's releasing
+### Import an existing library
 
-The **Pull List** page shows upcoming releases for the current week and the next two weeks. Click **Download** on any issue to add it to the queue immediately.
+**Settings → Library Import** scans a server-side folder and creates series and issues immediately from the parsed folder and filenames — no metadata calls, so a large library populates in seconds. A background job then backfills real metadata in throttled batches; the page shows pending / synced / unmatched counts as it works.
 
-### Monitor downloads
+### Watch downloads
 
-The **Queue** page shows all active, pending, and failed jobs. Failed jobs retry automatically each morning (configurable via `retry_time`). You can also retry any failed job manually.
+**Queue** shows every job. Failed jobs retry on exponential backoff, swept daily at `retry_time` and once at startup (so a window missed while PullBox was down isn't skipped). A job the download client has lost track of is failed and retried after `download_missing_grace_minutes` instead of hanging in "downloading" forever.
+
+---
+
+## Other Settings pages
+
+- **Post-Processing** — move, copy or hardlink completed downloads into an organized tree using `{publisher}/{series} ({year})` and `{series} #{issue} - {title}` patterns. Requires PullBox to see the same filesystem paths the download client reports.
+- **File Health** — scans tracked issues *and* everything under the library root for files readers choke on: a RAR named `.cbz`, archives with no images, 0-byte or truncated files, and database rows pointing at files moved or deleted outside PullBox. The default pass reads headers only; a deep scan CRC-verifies every entry to catch bit-rot, at the cost of reading every byte.
+- **Duplicate Series** — finds title-collision duplicates and merges them, repointing issues onto the survivor.
+- **General** — override the library path at runtime without touching `config.yaml`.
 
 ---
 
@@ -93,16 +148,39 @@ The **Queue** page shows all active, pending, and failed jobs. Failed jobs retry
 
 | Setting | Default | Description |
 |---|---|---|
-| `comicvine_api_key` | — | **Required.** ComicVine API key |
-| `secret_key` | `changeme` | **Change this.** Used for internal token signing |
-| `library_path` | `/comics` | Root folder for downloaded files |
-| `retry_time` | `06:00` | Daily time (24h) to retry failed downloads |
+| `metron_username` / `metron_password` | — | Metron account login (HTTP Basic, not an API key) |
+| `metadata_provider` | `metron` | Which source is primary: `metron` or `comicvine` |
+| `comicvine_api_key` | — | ComicVine API key; fallback when Metron is primary |
+| `secret_key` | `changeme` | **Change this.** Internal token signing |
+| `external_api_token` | — | Shared token for `/api/external/*`; blank disables those routes |
+| `library_path` | `/comics` | Root folder for downloaded files (Settings → General overrides) |
+| `config_path` | `/config` | Where the database and config file live |
+| `database_url` | SQLite at `/config/pullbox.db` | Override to use PostgreSQL |
+| `retry_time` | `06:00` | Daily time (24h) for the queue retry sweep |
 | `max_retries` | `20` | Max attempts per issue before permanent failure |
 | `pull_list_lookahead_weeks` | `2` | Weeks ahead shown in the pull list |
-| `database_url` | SQLite at `/config/pullbox.db` | Override to use PostgreSQL |
+| `download_poll_interval_minutes` | `1` | How often to ask clients about active downloads |
+| `download_missing_grace_minutes` | `30` | How long a job the client has no record of is given before it's failed |
+| `import_sync_interval_minutes` | `5` | Metadata backfill cadence for imported issues |
+| `import_sync_batch_size` | `10` | Issues backfilled per batch |
+| `arc_sync_interval_minutes` | `60` | Subscribed-arc gap-fill cadence |
+| `arc_sync_budget` | `15` | Max provider lookups per arc per run |
+| `metron_rate_limit_per_min` | `18` | Local cap, under Metron's 20/min |
+| `metron_rate_limit_per_day` | `4800` | Local cap, under Metron's 5000/day |
+| `comicvine_rate_limit_per_hour` | `190` | Local cap, under ComicVine's ~200/hr |
+| `comicvine_min_interval` | `1.0` | Minimum seconds between ComicVine calls |
 | `debug` | `false` | Verbose logging and FastAPI debug pages |
+| `db_echo` | `false` | Echo every SQL statement — very noisy, independent of `debug` |
 
-All settings can be overridden with environment variables prefixed `PULLBOX_` (e.g. `PULLBOX_RETRY_TIME=08:00`).
+All settings accept a `PULLBOX_`-prefixed environment variable override (e.g. `PULLBOX_RETRY_TIME=08:00`).
+
+---
+
+## Companion apps
+
+`/api/external/*` is a read-only feed for local companion apps such as Thwip. It serves cached database rows only and never calls a metadata provider, so a companion re-syncing on every library scan can't drain your Metron budget — PullBox stays the single throttled caller.
+
+Set `external_api_token` to a random string and give the companion the same value; it sends it as an `X-PullBox-Token` header. **Blank leaves the routes disabled**, which is deliberate — this feed exposes the whole library including on-disk paths.
 
 ---
 
@@ -113,7 +191,7 @@ docker compose pull
 docker compose up -d
 ```
 
-Database migrations run automatically on startup.
+Migrations run automatically on startup.
 
 ---
 
@@ -129,14 +207,11 @@ uv sync
 uv run fastapi dev pullbox/main.py --port 8585
 ```
 
-API available at **http://localhost:8585**. Interactive docs at **http://localhost:8585/docs**.
+API at **http://localhost:8585**, interactive docs at **/docs**.
 
 ```bash
-# Run tests
-uv run pytest
-
-# Lint
-uv run ruff check pullbox/ tests/
+uv run pytest                        # tests
+uv run ruff check pullbox/ tests/    # lint
 ```
 
 ### Frontend
@@ -147,7 +222,7 @@ npm install
 npm run dev
 ```
 
-Frontend dev server at **http://localhost:5173**, proxies `/api` calls to the backend.
+Dev server at **http://localhost:5173**, proxying `/api` to the backend.
 
 ```bash
 npm run test        # unit tests
@@ -164,13 +239,36 @@ cd backend && uv run fastapi dev pullbox/main.py --port 8585
 cd frontend && npm run dev
 ```
 
+### Deploying to a separate machine
+
+If you develop on one machine and run PullBox on another, `build-deploy.ps1` builds the frontend, stages it into `backend/pullbox/static/`, and produces `pullbox-deploy.zip`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File build-deploy.ps1
+```
+
+Copy the zip to the server, unzip, then `uv sync --frozen` and start it. Note that the app serves the frontend as a **pre-built** static bundle — a frontend source edit does not appear in the running app until that bundle is rebuilt.
+
+---
+
+## Troubleshooting
+
+**A frontend change isn't showing.** The running app serves a pre-built bundle from `backend/pullbox/static/`. Rebuild it (`npm run build`, or `build-deploy.ps1`). For live reload during development use `npm run dev` instead.
+
+**Startup hangs before "Database ready".** Run PullBox on a standard CPython (uv-managed is easiest). Some bundled distributions — Anaconda in particular — stall on `aiosqlite`'s async startup.
+
+**Scheduled jobs seem to do nothing.** Check `config/logs/pullbox.log`. APScheduler job failures and misfires are routed there at WARNING.
+
+**Nothing gets found for an issue.** Confirm the indexer passes its **Test**, then check whether your indexer carries category `7030` (Books/Comics); PullBox falls back to `7000` (Books) when `7030` comes back empty.
+
 ---
 
 ## Data & Backups
 
-Everything lives in the `config/` directory:
+Everything lives in `config/`:
 
-- `config/pullbox.db` — SQLite database (series, issues, queue, indexers)
+- `config/pullbox.db` — SQLite database (series, issues, queue, indexers, arcs)
 - `config/config.yaml` — your configuration
+- `config/logs/` — application logs
 
-Back up the `config/` folder to preserve all data. The comics library itself (mounted at `/comics`) is managed by your download client and is not touched by PullBox directly.
+Back up `config/` to preserve all data. The comics library itself (mounted at `/comics`) is not modified by PullBox unless post-processing is enabled.
