@@ -1,6 +1,6 @@
 # build-deploy.ps1
 # Build the frontend, stage it into the backend, package a clean copy of the
-# backend into "_TO COPY", and zip it for transfer to another machine.
+# backend into a temp staging folder, and zip it for transfer to another machine.
 #
 # Run from anywhere:
 #   powershell -ExecutionPolicy Bypass -File C:\Users\Rory\PullBox\build-deploy.ps1
@@ -13,11 +13,11 @@ $Frontend  = Join-Path $Root 'frontend'
 $Backend   = Join-Path $Root 'backend'
 $DistDir   = Join-Path $Frontend 'dist'
 $StaticDir = Join-Path $Backend 'pullbox\static'
-$CopyDir   = Join-Path $Root '_TO COPY'
+$CopyDir   = Join-Path $env:TEMP 'pullbox-deploy-stage'
 $ZipPath   = Join-Path $Root 'pullbox-deploy.zip'
 
-# ── 1. Clean the _TO COPY staging folder ──────────────────────────────────────
-Write-Host '==> Cleaning "_TO COPY" ...' -ForegroundColor Cyan
+# ── 1. Clean the staging folder ──────────────────────────────────────
+Write-Host '==> Cleaning staging folder ...' -ForegroundColor Cyan
 if (Test-Path -LiteralPath $CopyDir) {
     Remove-Item -LiteralPath $CopyDir -Recurse -Force
 }
@@ -41,9 +41,9 @@ if (Test-Path -LiteralPath $StaticDir) {
 }
 Copy-Item -LiteralPath $DistDir -Destination $StaticDir -Recurse
 
-# ── 4. Copy the backend into _TO COPY, excluding junk (copy + clean in one) ────
+# ── 4. Copy the backend into staging, excluding junk (copy + clean in one) ────
 # robocopy skips these during the copy so we never haul the multi-GB .venv around.
-Write-Host '==> Copying backend into "_TO COPY" (excluding venv / caches / dbs) ...' -ForegroundColor Cyan
+Write-Host '==> Copying backend into staging (excluding venv / caches / dbs) ...' -ForegroundColor Cyan
 $BackendCopy = Join-Path $CopyDir 'backend'
 $excludeDirs  = @('.venv', '__pycache__', '.pytest_cache', '.ruff_cache', '.mypy_cache', 'node_modules')
 $excludeFiles = @('*.pyc', '*.pyo', '*.db', '*.db-shm', '*.db-wal')
