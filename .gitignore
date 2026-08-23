@@ -48,3 +48,11 @@ pullbox-deploy.zip
 
 # Local design/planning notes - intentionally not published
 memory-bank/
+
+# Comic library. library_path points inside config/, so downloaded files land
+# here - never publish them. Extension globs are a backstop if it is repointed.
+config/comics/
+*.cbz
+*.cbr
+*.cbt
+*.cb7
