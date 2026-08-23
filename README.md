@@ -118,6 +118,13 @@ Each has a **Test** button. `priority` decides the order results are preferred i
 
 **Settings → Download Clients** — NZBGet, SABnzbd, or qBittorrent, with host, port and credentials.
 
+> **Create the category in your download client first.** PullBox tags every job it submits with a category — `pullbox-comics` by default — and the client must already have that category defined. It is not created for you.
+>
+> - **SABnzbd:** Config → Categories → add a category named `pullbox-comics`, then Save. SABnzbd silently falls back to `Default` for a category it doesn't recognise, which sends your comics to the wrong folder and can leave post-processing unable to find the finished file.
+> - **NZBGet:** Settings → Categories → add `pullbox-comics` and reload.
+>
+> If you'd rather reuse a category you already have, change the **Category** field on the client in PullBox to match its exact name — the two just have to agree.
+
 ### Subscribe to a series
 
 1. **Series** → search for a title
@@ -256,6 +263,8 @@ Copy the zip to the server, unzip, then `uv sync --frozen` and start it. Note th
 **A frontend change isn't showing.** The running app serves a pre-built bundle from `backend/pullbox/static/`. Rebuild it (`npm run build`, or `build-deploy.ps1`). For live reload during development use `npm run dev` instead.
 
 **Startup hangs before "Database ready".** Run PullBox on a standard CPython (uv-managed is easiest). Some bundled distributions — Anaconda in particular — stall on `aiosqlite`'s async startup.
+
+**Downloads complete but never land in the library.** Check that the category on the client in PullBox (`pullbox-comics` by default) exists in SABnzbd or NZBGet under exactly that name. An unknown category falls back to the client's `Default`, so the file finishes somewhere PullBox isn't looking and post-processing can't relocate it.
 
 **Scheduled jobs seem to do nothing.** Check `config/logs/pullbox.log`. APScheduler job failures and misfires are routed there at WARNING.
 
