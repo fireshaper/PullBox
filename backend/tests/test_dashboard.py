@@ -102,6 +102,12 @@ async def _add_sync_status(key: str, *, success: bool, message: str) -> None:
 @pytest.fixture
 def client():
     with TestClient(app) as c:
+        # Let the lifespan's startup daily_queue_sweep finish on the empty DB so it
+        # cannot act on the jobs/issues these tests seed (see test_queue.client).
+        async def _startup_sweep_done():
+            await app.state.startup_sweep
+
+        c.portal.call(_startup_sweep_done)
         yield c
 
 

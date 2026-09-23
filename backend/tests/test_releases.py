@@ -438,6 +438,54 @@ def test_refresh_week_enriches_publisher_via_volume_lookup(client):
     fake_cv.get_volume.assert_awaited_once_with(metron_id=None, comicvine_id="vol-100")
 
 
+def test_refresh_week_releases_write_lock_during_publisher_lookup(client):
+    """A concurrent write must succeed while _refresh_week enriches publishers.
+
+    The upsert flushes take SQLite's single write lock, and enrichment is one
+    rate-limited provider call per series. Holding the lock across those calls
+    starved every other writer past busy_timeout (5s) — cv_link, the download
+    poller and APScheduler's own bookkeeping, which crashed the scheduler.
+    """
+    from datetime import date
+
+    from sqlalchemy import text
+
+    import pullbox.database as db_module
+    from pullbox.routers.releases import _refresh_week
+
+    # The write lands at 2s; a held lock would make it wait 8s, well past busy_timeout.
+    async def slow_volume(**_ids):
+        await asyncio.sleep(10)
+        return {"publisher": "Image", "start_year": 2021}
+
+    fake_cv = AsyncMock()
+    fake_cv.get_weekly_releases.return_value = _weekly_payload("vol-lock")
+    fake_cv.get_volume.side_effect = slow_volume
+
+    async def _competing_write():
+        await asyncio.sleep(2)  # land mid-lookup
+        async with db_module.AsyncSessionLocal() as db:
+            await db.execute(
+                text("UPDATE series SET title=:t WHERE comicvine_id=:c"),
+                {"t": "Series X", "c": "vol-lock"},
+            )
+            await db.commit()
+        return True
+
+    async def _run():
+        async with db_module.AsyncSessionLocal() as db:
+            wrote, _ = await asyncio.gather(
+                _competing_write(),
+                _refresh_week(db, fake_cv, date(2025, 5, 5), date(2025, 5, 11)),
+            )
+            await db.commit()
+        return wrote
+
+    # Raises OperationalError("database is locked") if the lock is held.
+    assert asyncio.run(_run()) is True
+    assert asyncio.run(_series_publisher("vol-lock")) == ("Image", 2021)
+
+
 def test_refresh_week_skips_lookup_when_publisher_already_known(client):
     """A series that already has a publisher is not re-fetched (steady-state = 0 lookups)."""
     from datetime import date

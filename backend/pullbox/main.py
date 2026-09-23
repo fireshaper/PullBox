@@ -45,12 +45,7 @@ def _run_migrations() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from pullbox.logging_config import configure_logging
-    from pullbox.scheduler import (
-        build_scheduler,
-        daily_queue_sweep,
-        register_schedules,
-        supervise_scheduler,
-    )
+    from pullbox.scheduler import daily_queue_sweep, run_scheduler
 
     deps._settings = Settings()
 
@@ -77,32 +72,43 @@ async def lifespan(app: FastAPI):
     await asyncio.to_thread(_run_migrations)
 
     engine = database.get_engine()
-    scheduler = build_scheduler(engine)
-    async with scheduler:
-        await register_schedules(scheduler, deps._settings)
-        await scheduler.start_in_background()
+    # The scheduler runs in its own task rather than an ``async with`` here: a
+    # scheduler crash used to unwind this block, leaving a dead instance nothing
+    # could restart. run_scheduler owns the context and rebuilds it on a crash.
+    scheduler_started = asyncio.Event()
+    app.state.scheduler_task = asyncio.create_task(
+        run_scheduler(engine, deps._settings, scheduler_started), name="scheduler"
+    )
+    # Hold startup until the scheduler is up, as the old in-place start did; a
+    # failed first start is logged and retried by run_scheduler, so don't block
+    # the API on it forever.
+    try:
+        await asyncio.wait_for(scheduler_started.wait(), timeout=30)
         logger.info("Database ready, scheduler started")
-        # Catch up on a retry window missed while PullBox was down. The sweep is a
-        # CronTrigger registered with ConflictPolicy.replace, so each startup rewrites
-        # the schedule row and re-arms next_fire_time from now — any missed 06:00 is
-        # discarded, not deferred. Without this the queue only ever advances if the
-        # process happens to be up at exactly that minute.
-        # Reference held for the app's lifetime: asyncio only weakly tracks tasks, and
-        # this one awaits network searches for minutes, so a bare create_task can be
-        # garbage-collected mid-sweep.
-        app.state.startup_sweep = asyncio.create_task(daily_queue_sweep())
-        app.state.scheduler_watchdog = asyncio.create_task(
-            supervise_scheduler(scheduler, deps._settings)
-        )
-        yield
-        app.state.scheduler_watchdog.cancel()
-        logger.info("PullBox shutting down")
-        # Give fire-and-forget webhook deliveries a moment to land before the
-        # loop closes under them (a completed download's notification is the
-        # last thing worth losing on a restart).
-        from pullbox.services.webhooks import wait_for_inflight  # noqa: PLC0415
+    except asyncio.TimeoutError:
+        logger.error("Scheduler did not start within 30s; it will keep retrying")
+    # Catch up on a retry window missed while PullBox was down. The sweep is a
+    # CronTrigger registered with ConflictPolicy.replace, so each startup rewrites
+    # the schedule row and re-arms next_fire_time from now — any missed 06:00 is
+    # discarded, not deferred. Without this the queue only ever advances if the
+    # process happens to be up at exactly that minute.
+    # Reference held for the app's lifetime: asyncio only weakly tracks tasks, and
+    # this one awaits network searches for minutes, so a bare create_task can be
+    # garbage-collected mid-sweep.
+    app.state.startup_sweep = asyncio.create_task(daily_queue_sweep())
+    yield
+    logger.info("PullBox shutting down")
+    app.state.scheduler_task.cancel()
+    try:
+        await app.state.scheduler_task
+    except asyncio.CancelledError:
+        pass
+    # Give fire-and-forget webhook deliveries a moment to land before the
+    # loop closes under them (a completed download's notification is the
+    # last thing worth losing on a restart).
+    from pullbox.services.webhooks import wait_for_inflight  # noqa: PLC0415
 
-        await wait_for_inflight()
+    await wait_for_inflight()
 
     if database._engine is not None:
         await database._engine.dispose()

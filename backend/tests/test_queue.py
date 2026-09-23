@@ -65,6 +65,13 @@ def _make_mock_provider(*, volume=None, issues=None):
 @pytest.fixture
 def client():
     with TestClient(app) as c:
+        # The lifespan fires a startup daily_queue_sweep, which runs the same
+        # reconcile these tests call. Let it finish on an empty DB first, or it
+        # races the test's seeding and enqueues the issue before the test does.
+        async def _startup_sweep_done():
+            await app.state.startup_sweep
+
+        c.portal.call(_startup_sweep_done)
         yield c
 
 

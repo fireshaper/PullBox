@@ -81,33 +81,65 @@ async def register_schedules(scheduler: AsyncScheduler, settings: Settings) -> N
     )
 
 
-async def supervise_scheduler(scheduler: AsyncScheduler, settings: Settings) -> None:
-    """Restart the scheduler if it dies, and say so loudly when it does.
+async def run_scheduler(
+    engine, settings: Settings, started: asyncio.Event | None = None
+) -> None:
+    """Run the scheduler for the app's lifetime, rebuilding it whenever it crashes.
 
     APScheduler 4 calls ``data_store.release_job`` outside any error handling, so a
     single failed bookkeeping write — "database is locked" under SQLite contention —
     propagates out of its task group and stops the scheduler for good. Nothing polls
-    downloads or sweeps the queue after that, and the only symptom is silence, which
-    is exactly how this went unnoticed. Watch for it and bring the scheduler back.
-    """
-    from apscheduler import RunState  # noqa: PLC0415
+    downloads or sweeps the queue after that, and the only symptom is silence.
 
-    interval = max(30, settings.scheduler_watchdog_interval_seconds)
+    The crash also tears down the scheduler's ``async with`` context, which resets
+    its services — so the stopped instance cannot be started again (every attempt
+    raises "The scheduler has not been initialized yet"). The only reliable recovery
+    is a fresh scheduler in a fresh context, which is what each loop pass builds.
+    Schedules live in the datastore and are re-registered with
+    ConflictPolicy.replace, so nothing is lost across a restart.
+
+    Run this as its own task; cancel it to shut the scheduler down. ``started`` is
+    set once the first scheduler is up, so startup can wait for it.
+    """
+    from apscheduler import SchedulerStarted  # noqa: PLC0415
+
+    delay = max(1, settings.scheduler_watchdog_interval_seconds)
+    first = True
     while True:
-        await asyncio.sleep(interval)
+        scheduler = build_scheduler(engine)
         try:
-            if scheduler.state is RunState.stopped:
-                logger.error(
-                    "Scheduler is stopped but PullBox is still running — restarting it. "
-                    "Downloads and queue retries do not run while it is down."
-                )
-                await scheduler.start_in_background()
+            async with scheduler:
                 await register_schedules(scheduler, settings)
-                logger.info("Scheduler restarted by the watchdog")
+                logger.info("Scheduler started" if first else "Scheduler restarted after a crash")
+                first = False
+                if started is not None and not started.is_set():
+                    scheduler.subscribe(
+                        lambda _event: started.set(), {SchedulerStarted}, one_shot=True
+                    )
+                await scheduler.run_until_stopped()
+            logger.error("Scheduler stopped unexpectedly; restarting in %ds", delay)
         except asyncio.CancelledError:
             raise
-        except Exception:
-            logger.exception("Scheduler watchdog failed to restart the scheduler")
+        except BaseException as exc:
+            # anyio task groups raise (Base)ExceptionGroup; a cancellation of this
+            # task can arrive wrapped in one, and must still end the loop.
+            task = asyncio.current_task()
+            if task is not None and task.cancelling():
+                raise
+            if not isinstance(exc, Exception | BaseExceptionGroup):
+                raise  # KeyboardInterrupt / SystemExit
+            logger.exception(
+                "Scheduler crashed — downloads are not polled and the queue is not "
+                "retried until it restarts (in %ds)",
+                delay,
+            )
+        # The job that was running when it crashed is still leased to the dead
+        # instance, and every task allows one running job — so that job's task
+        # (usually poll_download_clients) stays blocked until the lease lapses and
+        # a cleanup releases it. The new scheduler cleans up as it starts, so wait
+        # out the lease first; restarting sooner would leave the task stuck until
+        # the next cleanup, 15 minutes later.
+        await asyncio.sleep(max(delay, scheduler.lease_duration.total_seconds() + 1))
 
 
 def now_utc() -> datetime:

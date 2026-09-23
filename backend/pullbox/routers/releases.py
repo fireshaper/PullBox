@@ -136,7 +136,9 @@ async def _refresh_week(db, provider, monday: date, sunday: date) -> list[int]:
     """Fetch this week's releases from the provider and upsert into
     Series/Issue/WeeklyRelease.
 
-    Uses the caller's DB session so all writes land in the same transaction.
+    Uses the caller's DB session. Commits the upserts before the per-series
+    publisher lookups (network) so no write lock is held across HTTP; the
+    enrichment writes are left for the caller to commit.
     Never overwrites Issue.status on existing rows.
 
     Returns the ids of DownloadJobs created for newly-discovered issues on
@@ -227,6 +229,14 @@ async def _refresh_week(db, provider, monday: date, sunday: date) -> list[int]:
         if result.scalar_one_or_none() is None:
             db.add(WeeklyRelease(issue_id=issue.id, release_date=release_date, source=source))
 
+    # The flushes above hold SQLite's single write lock until commit, and the
+    # enrichment below is one rate-limited provider call per series — minutes on
+    # a week full of new series. Holding the lock across that starved every other
+    # writer past busy_timeout ("database is locked"), APScheduler's own
+    # bookkeeping included, which crashed the scheduler. Commit first so the
+    # lookups run with no write pending; their results land in a short second
+    # transaction (the caller's commit).
+    await db.commit()
     await _enrich_publishers(db, provider, needs_publisher)
 
     await db.flush()

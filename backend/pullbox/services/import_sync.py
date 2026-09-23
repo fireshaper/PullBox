@@ -143,6 +143,15 @@ async def resolve_series_for_import(
             if match_clauses
             else None
         )
+        # Fetch before writing anything: the merge/stamp below flushes, which takes
+        # SQLite's single write lock until the caller commits, and get_issues is
+        # paginated, rate-limited HTTP. Holding the lock across it starves every
+        # other writer past busy_timeout (APScheduler's bookkeeping included, which
+        # crashes the scheduler). The ids are the same either way: the existing
+        # row's, or the match's once stamped onto this series.
+        remote_issues = await provider.get_issues(
+            **ids_for(existing if existing is not None else match)
+        )
         if existing is not None:
             logger.info(
                 "import backfill: %r matches metron=%s cv=%s, already present as "
@@ -157,8 +166,9 @@ async def resolve_series_for_import(
         else:
             _apply_volume_match(series, match)
             await db.flush()
+    else:
+        remote_issues = await provider.get_issues(**ids_for(series))
 
-    remote_issues = await provider.get_issues(**ids_for(series))
     by_number: dict[str, dict] = {}
     for remote in remote_issues:
         by_number.setdefault(normalize_issue_number(remote.get("issue_number", "")), remote)

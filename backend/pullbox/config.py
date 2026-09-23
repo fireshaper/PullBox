@@ -57,10 +57,10 @@ class Settings(BaseSettings):
     # between a client finishing a file and PullBox moving it into the library,
     # so keep it low — each poll is only a couple of local API calls per job.
     download_poll_interval_minutes: int = 1
-    # How often the watchdog checks that the scheduler is still alive. APScheduler
+    # How long to wait before rebuilding the scheduler after it crashes. APScheduler
     # stops permanently if a datastore write fails, taking download polling and
-    # queue retries down with it and reporting nothing further, so this is the
-    # backstop that notices and restarts it. Values below 30s are clamped.
+    # queue retries down with it, so scheduler.run_scheduler restarts it with a
+    # fresh instance after this delay. Values below 1s are clamped.
     scheduler_watchdog_interval_seconds: int = 60
     # Grace period before a job the download client has no record of is given up
     # on. A freshly-submitted NZB can take a moment to surface in the queue, so

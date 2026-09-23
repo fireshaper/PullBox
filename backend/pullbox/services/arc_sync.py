@@ -239,7 +239,13 @@ async def resolve_arc_members(
         result.rate_limited = True
         return result
 
-    _apply_arc_metadata(arc, data)
+    # ── Phase 1: reads and provider lookups only ─────────────────────────────
+    # Nothing is written until every get_issue call below has returned. A flush
+    # takes SQLite's single write lock until the caller commits, and each lookup is
+    # rate-limited HTTP (seconds apiece at Metron's cap); holding the lock across
+    # them starved every other writer past busy_timeout — APScheduler's own
+    # bookkeeping included, which crashed the scheduler. So even the arc metadata
+    # waits for phase 2: set now, it would be autoflushed by the next query.
 
     # Re-load with members eagerly present so appending never triggers a lazy load.
     arc = (
@@ -250,27 +256,20 @@ async def resolve_arc_members(
         )
     ).scalar_one()
 
-    # Held as a plain string: a savepoint rollback below expires the arc row, and
-    # reading an attribute off an expired instance mid-loop (or in the final log
-    # line) would fire lazy IO outside SQLAlchemy's greenlet context.
-    arc_name = arc.name
-
     members = data.get("issues") or []
     result.members = len(members)
     local_index = await _local_issues_for_members(db, members)
-    already_linked = {i.id for i in arc.issues}
 
-    series_cache: dict[str, Series] = {}
-    arc_cache: dict[str, StoryArc] = {}
+    # What phase 2 will do, in member order: link an issue we already hold, or
+    # create one from a fetched detail payload.
+    plan: list[tuple[Issue | None, dict, dict | None]] = []
     spent = 0
 
     for member in members:
         existing = _member_local(local_index, member)
         if existing is not None:
             result.in_library += 1
-            if existing.id not in already_linked:
-                arc.issues.append(existing)
-                already_linked.add(existing.id)
+            plan.append((existing, member, None))
             continue
 
         if spent >= budget:
@@ -283,7 +282,7 @@ async def resolve_arc_members(
                 metron_id=member.get("metron_id"), comicvine_id=member.get("comicvine_id")
             )
         except RATE_LIMIT_ERRORS as exc:
-            logger.warning("Arc sync for %r paused on rate limit: %s", arc_name, exc)
+            logger.warning("Arc sync for %r paused on rate limit: %s", arc.name, exc)
             result.rate_limited = True
             result.remaining += 1
             break
@@ -295,6 +294,26 @@ async def resolve_arc_members(
                 exc,
             )
             result.failed += 1
+            continue
+        plan.append((None, member, detail))
+
+    # ── Phase 2: writes only — no network from here on ───────────────────────
+    _apply_arc_metadata(arc, data)
+
+    # Held as a plain string: a savepoint rollback below expires the arc row, and
+    # reading an attribute off an expired instance mid-loop (or in the final log
+    # line) would fire lazy IO outside SQLAlchemy's greenlet context.
+    arc_name = arc.name
+    already_linked = {i.id for i in arc.issues}
+
+    series_cache: dict[str, Series] = {}
+    arc_cache: dict[str, StoryArc] = {}
+
+    for existing, member, detail in plan:
+        if existing is not None:
+            if existing.id not in already_linked:
+                arc.issues.append(existing)
+                already_linked.add(existing.id)
             continue
 
         # SAVEPOINT per member: a member the provider reports twice under two ids
