@@ -57,6 +57,11 @@ class Settings(BaseSettings):
     # between a client finishing a file and PullBox moving it into the library,
     # so keep it low — each poll is only a couple of local API calls per job.
     download_poll_interval_minutes: int = 1
+    # How often the watchdog checks that the scheduler is still alive. APScheduler
+    # stops permanently if a datastore write fails, taking download polling and
+    # queue retries down with it and reporting nothing further, so this is the
+    # backstop that notices and restarts it. Values below 30s are clamped.
+    scheduler_watchdog_interval_seconds: int = 60
     # Grace period before a job the download client has no record of is given up
     # on. A freshly-submitted NZB can take a moment to surface in the queue, so
     # "missing" is only trusted once the job has been out for this long; after
@@ -72,6 +77,11 @@ class Settings(BaseSettings):
     # have 60+ members and the budget is shared with search and calendar refresh.
     arc_sync_interval_minutes: int = 60
     arc_sync_budget: int = 15
+    # Recovery of missing ComicVine ids (services/cv_link.py). One ComicVine
+    # search per series, so the budget is deliberately small: the backlog drains
+    # over a day or so and leaves most of the hourly quota for everything else.
+    cv_link_interval_minutes: int = 30
+    cv_link_budget: int = 20
     secret_key: str = "changeme"
     # Shared token for /api/external/* (the read-only feed companion apps like
     # Thwip consume). Blank disables those routes entirely — they expose the

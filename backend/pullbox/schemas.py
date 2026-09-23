@@ -1,6 +1,6 @@
 from datetime import date, datetime
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 
 class SeriesResponse(BaseModel):
@@ -310,7 +310,9 @@ class AddSeriesRequest(BaseModel):
     metron_id: str | None = None
     comicvine_id: str | None = None
     subscribed: bool = False
-    auto_download: bool = False
+    # None means "not specified", which lets subscribing imply auto-download while
+    # an explicit false still wins. A plain `bool = False` cannot express that.
+    auto_download: bool | None = None
 
     @model_validator(mode="after")
     def _require_one_id(self) -> "AddSeriesRequest":
@@ -429,6 +431,9 @@ class ReleaseSeriesSummary(BaseModel):
     # The weekly refresh creates a local Series row for *every* release, so row
     # existence says nothing about whether the user follows it — this does.
     subscribed: bool
+    # Lets the pull list deep-link to the ComicVine volume page; None for
+    # Metron-only series that have not been matched to a ComicVine volume.
+    comicvine_id: str | None
 
 
 class WeeklyReleaseResponse(BaseModel):
@@ -927,3 +932,124 @@ class CalendarResponse(BaseModel):
     scope: str
     entries: list[CalendarEntry]
     summary: CalendarSummary
+
+
+# ── Webhook schemas ───────────────────────────────────────────────────────────
+
+
+def _validate_webhook_url(url: str) -> str:
+    url = url.strip()
+    if not url.lower().startswith(("http://", "https://")):
+        raise ValueError("URL must start with http:// or https://")
+    return url
+
+
+def _validate_webhook_format(fmt: str) -> str:
+    from pullbox.services.webhooks import FORMATS  # noqa: PLC0415
+
+    if fmt not in FORMATS:
+        raise ValueError(f"format must be one of: {', '.join(FORMATS)}")
+    return fmt
+
+
+def _validate_webhook_events(events: list[str]) -> list[str]:
+    from pullbox.services.webhooks import EVENTS  # noqa: PLC0415
+
+    unknown = [e for e in events if e not in EVENTS]
+    if unknown:
+        raise ValueError(f"Unknown event(s): {', '.join(unknown)}")
+    # Keep the caller's order but drop repeats.
+    return list(dict.fromkeys(events))
+
+
+class WebhookCreate(BaseModel):
+    name: str
+    url: str
+    format: str = "generic"
+    events: list[str] = []
+    secret: str | None = None
+    enabled: bool = True
+
+    @field_validator("name")
+    @classmethod
+    def _name_not_blank(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("Name is required")
+        return v.strip()
+
+    _url = field_validator("url")(_validate_webhook_url)
+    _format = field_validator("format")(_validate_webhook_format)
+    _events = field_validator("events")(_validate_webhook_events)
+
+
+class WebhookUpdate(BaseModel):
+    """All fields optional — only provided fields are written to the database."""
+
+    name: str | None = None
+    url: str | None = None
+    format: str | None = None
+    events: list[str] | None = None
+    secret: str | None = None
+    enabled: bool | None = None
+
+    @field_validator("name")
+    @classmethod
+    def _name_not_blank(cls, v: str | None) -> str | None:
+        if v is not None and not v.strip():
+            raise ValueError("Name is required")
+        return v.strip() if v is not None else None
+
+    @field_validator("url")
+    @classmethod
+    def _url(cls, v: str | None) -> str | None:
+        return _validate_webhook_url(v) if v is not None else None
+
+    @field_validator("format")
+    @classmethod
+    def _format(cls, v: str | None) -> str | None:
+        return _validate_webhook_format(v) if v is not None else None
+
+    @field_validator("events")
+    @classmethod
+    def _events(cls, v: list[str] | None) -> list[str] | None:
+        return _validate_webhook_events(v) if v is not None else None
+
+
+class WebhookResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    url: str
+    format: str
+    events: list[str]
+    secret: str | None
+    enabled: bool
+    last_delivery_at: datetime | None
+    last_delivery_success: bool | None
+    last_delivery_error: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class WebhookEventInfo(BaseModel):
+    name: str
+    description: str
+
+
+class WebhookTestRequest(BaseModel):
+    """Ad-hoc webhook config to test before it has been saved."""
+
+    name: str = "Unsaved webhook"
+    url: str
+    format: str = "generic"
+    secret: str | None = None
+
+    _url = field_validator("url")(_validate_webhook_url)
+    _format = field_validator("format")(_validate_webhook_format)
+
+
+class WebhookTestResponse(BaseModel):
+    success: bool
+    message: str
+    status_code: int | None = None

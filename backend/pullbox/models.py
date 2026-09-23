@@ -1,6 +1,7 @@
 from datetime import date, datetime
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     Column,
     Date,
@@ -52,6 +53,11 @@ class Series(Base):
     auto_download: Mapped[bool] = mapped_column(Boolean, default=False)
     cover_url: Mapped[str | None] = mapped_column(String, nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # When a ComicVine id was last *searched* for (see services/cv_link.py).
+    # Metron leaves cv_id null on most series, so the id has to be recovered by
+    # title+year search; this marks the attempt so an unmatchable series is not
+    # re-searched on every sweep. NULL = never tried.
+    cv_lookup_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     issues: Mapped[list["Issue"]] = relationship("Issue", back_populates="series")
@@ -325,3 +331,34 @@ class StoryArc(Base):
     issues: Mapped[list["Issue"]] = relationship(
         "Issue", secondary=issue_story_arcs, back_populates="arcs"
     )
+
+
+class Webhook(Base):
+    """One outbound notification target (Settings → Webhooks).
+
+    Every subscribed ``events`` entry is delivered as an HTTP POST to ``url``,
+    shaped by ``format`` — ``generic`` is PullBox's own JSON envelope (what a
+    companion like Thwip consumes), ``discord`` is a Discord-native embed. See
+    ``services/webhooks.py`` for the event names, payloads and delivery rules.
+    ``secret``, when set, signs generic deliveries with an HMAC so the receiver
+    can reject forged posts.
+    """
+
+    __tablename__ = "webhooks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    url: Mapped[str] = mapped_column(String, nullable=False)
+    # generic | discord
+    format: Mapped[str] = mapped_column(String, default="generic", nullable=False)
+    # JSON list of subscribed event names (see services/webhooks.EVENTS).
+    events: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    secret: Mapped[str | None] = mapped_column(String, nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # Outcome of the most recent delivery attempt (any event, including tests),
+    # so a dead endpoint is visible in the UI without reading the logs.
+    last_delivery_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_delivery_success: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    last_delivery_error: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

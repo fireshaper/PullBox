@@ -13,7 +13,13 @@ import {
   XCircle,
 } from 'lucide-react'
 import { get, post } from '../../api/client'
+import { Cover } from '../../components/cover'
+import { StatusText } from '../../components/status-text'
+import { Button } from '../../components/ui/button'
 import { Skeleton } from '../../components/ui/skeleton'
+import { ACTIVE_POLL_MS, FOLLOW_UP_REFETCH_MS } from '../../lib/queuePolling'
+import { statusColor } from '../../lib/status'
+import { parseServerTime } from '../../lib/time'
 
 // ── Types (mirror backend dashboard schemas) ──────────────────────────────────
 
@@ -113,18 +119,6 @@ type PullResponse = {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-const STATUS_COLORS: Record<string, string> = {
-  wanted: 'var(--color-status-wanted)',
-  downloading: 'var(--color-status-downloading)',
-  downloaded: 'var(--color-status-downloaded)',
-  skipped: 'var(--color-status-skipped)',
-  failed: 'var(--color-status-failed)',
-  searching: 'var(--color-status-downloading)',
-  pending: 'var(--color-status-wanted)',
-  queued: 'var(--color-muted)',
-  completed: 'var(--color-status-downloaded)',
-  unknown: 'var(--color-muted)',
-}
 
 function formatBytes(bytes: number): string {
   if (!bytes) return '0 B'
@@ -136,7 +130,7 @@ function formatBytes(bytes: number): string {
 
 function formatDateTime(iso: string | null): string {
   if (!iso) return '—'
-  return new Date(iso).toLocaleString('en-US', {
+  return new Date(parseServerTime(iso)).toLocaleString('en-US', {
     month: 'short',
     day: 'numeric',
     hour: 'numeric',
@@ -146,7 +140,7 @@ function formatDateTime(iso: string | null): string {
 
 function formatRelative(iso: string | null): string {
   if (!iso) return 'Never'
-  const diff = Date.now() - new Date(iso).getTime()
+  const diff = Date.now() - parseServerTime(iso)
   const mins = Math.round(diff / 60000)
   if (mins < 1) return 'just now'
   if (mins < 60) return `${mins}m ago`
@@ -163,6 +157,21 @@ function formatReleaseDate(dateStr: string): string {
     timeZone: 'UTC',
   })
 }
+
+/** Refetch queue-derived views now, and once more shortly after. The activity
+ *  feed only lists searching/pending/downloading jobs, so the immediate refetch
+ *  usually still sees the job as 'queued' (invisible here); the follow-up lands
+ *  after run_job_now has picked it up, and the adaptive interval takes over. */
+function refreshQueueViews(queryClient: ReturnType<typeof useQueryClient>) {
+  const run = () => {
+    queryClient.invalidateQueries({ queryKey: ['dashboard', 'activity'] })
+    queryClient.invalidateQueries({ queryKey: ['queue'] })
+  }
+  run()
+  setTimeout(run, FOLLOW_UP_REFETCH_MS)
+}
+
+const IDLE_ACTIVITY_POLL_MS = 15_000
 
 // ── Route ─────────────────────────────────────────────────────────────────────
 
@@ -240,51 +249,13 @@ function EmptyRow({ text }: { text: string }) {
   )
 }
 
-function Cover({ url, size = 40 }: { url: string | null; size?: number }) {
-  const w = size
-  const h = Math.round(size * 1.4)
-  return url ? (
-    <img
-      src={url}
-      alt=""
-      style={{ width: w, height: h, objectFit: 'cover', borderRadius: '3px', flexShrink: 0 }}
-    />
-  ) : (
-    <div
-      style={{
-        width: w,
-        height: h,
-        borderRadius: '3px',
-        background: 'var(--color-border)',
-        flexShrink: 0,
-      }}
-    />
-  )
-}
-
-function StatusDot({ status }: { status: string }) {
-  return (
-    <span
-      style={{
-        fontSize: '0.68rem',
-        fontWeight: 600,
-        textTransform: 'capitalize',
-        color: STATUS_COLORS[status] ?? 'var(--color-muted)',
-        whiteSpace: 'nowrap',
-      }}
-    >
-      {status}
-    </span>
-  )
-}
-
 // ── Queue health strip ────────────────────────────────────────────────────────
 
 function QueueHealthStrip({ health }: { health: QueueHealth }) {
   const queryClient = useQueryClient()
   const retryAll = useMutation({
     mutationFn: () => post<{ retried: number }>('/queue/retry-failed'),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['dashboard', 'activity'] }),
+    onSuccess: () => refreshQueueViews(queryClient),
   })
 
   const tiles = [
@@ -337,29 +308,15 @@ function QueueHealthStrip({ health }: { health: QueueHealth }) {
       ))}
 
       {health.failed > 0 && (
-        <button
+        <Button
+          size="lg"
+          className="self-center"
           onClick={() => retryAll.mutate()}
           disabled={retryAll.isPending}
-          style={{
-            flex: '0 0 auto',
-            alignSelf: 'center',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '8px',
-            padding: '10px 16px',
-            borderRadius: '8px',
-            background: 'var(--color-accent)',
-            color: '#fff',
-            border: 'none',
-            fontSize: '0.82rem',
-            fontWeight: 600,
-            cursor: retryAll.isPending ? 'default' : 'pointer',
-            opacity: retryAll.isPending ? 0.6 : 1,
-          }}
         >
           <RefreshCw size={15} />
           {retryAll.isPending ? 'Retrying…' : `Retry All Failed (${health.failed})`}
-        </button>
+        </Button>
       )}
     </div>
   )
@@ -371,7 +328,7 @@ function ActiveDownloadRow({ job }: { job: Job }) {
   const isDownloading = job.status === 'downloading'
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '6px 0' }}>
-      <Cover url={job.issue?.cover_url ?? null} size={32} />
+      <Cover url={job.issue?.cover_url ?? null} width={32} radius={3} />
       <div style={{ flex: 1, minWidth: 0 }}>
         <div
           style={{
@@ -407,14 +364,14 @@ function ActiveDownloadRow({ job }: { job: Job }) {
                 inset: 0,
                 width: '30%',
                 borderRadius: 'inherit',
-                background: STATUS_COLORS[job.status] ?? 'var(--color-muted)',
+                background: statusColor(job.status),
                 opacity: 0.6,
               }}
             />
           )}
         </div>
       </div>
-      <StatusDot status={job.status} />
+      <StatusText status={job.status} className="text-[0.68rem]" />
     </div>
   )
 }
@@ -435,7 +392,7 @@ function CompactJobRow({
 
   const body = (
     <>
-      <Cover url={job.issue?.cover_url ?? null} size={28} />
+      <Cover url={job.issue?.cover_url ?? null} width={28} radius={3} />
       <div style={{ flex: 1, minWidth: 0 }}>
         <div
           style={{
@@ -581,32 +538,14 @@ function DownloadButton({ issueId }: { issueId: number }) {
     mutationFn: () => post(`/queue/enqueue/${issueId}`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['dashboard', 'pull'] })
-      queryClient.invalidateQueries({ queryKey: ['dashboard', 'activity'] })
+      refreshQueueViews(queryClient)
     },
   })
   return (
-    <button
-      onClick={() => mutation.mutate()}
-      disabled={mutation.isPending}
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: '5px',
-        fontSize: '0.72rem',
-        fontWeight: 600,
-        padding: '4px 10px',
-        borderRadius: '5px',
-        background: 'var(--color-accent)',
-        color: '#fff',
-        border: 'none',
-        cursor: mutation.isPending ? 'default' : 'pointer',
-        opacity: mutation.isPending ? 0.6 : 1,
-        whiteSpace: 'nowrap',
-      }}
-    >
+    <Button size="xs" onClick={() => mutation.mutate()} disabled={mutation.isPending}>
       <Download size={12} />
       {mutation.isPending ? '…' : 'Download'}
-    </button>
+    </Button>
   )
 }
 
@@ -616,7 +555,7 @@ function ReleaseRow({ release }: { release: Release }) {
   const grabbable = !['downloaded', 'downloading', 'skipped'].includes(release.status)
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '6px 0' }}>
-      <Cover url={release.cover_url} size={32} />
+      <Cover url={release.cover_url} width={32} radius={3} />
       <div style={{ flex: 1, minWidth: 0 }}>
         <div
           style={{
@@ -640,7 +579,7 @@ function ReleaseRow({ release }: { release: Release }) {
       {grabbable ? (
         <DownloadButton issueId={release.issue_id} />
       ) : (
-        <StatusDot status={release.status} />
+        <StatusText status={release.status} className="text-[0.68rem]" />
       )}
     </div>
   )
@@ -731,7 +670,13 @@ function DashboardPage() {
   const activity = useQuery<ActivityResponse>({
     queryKey: ['dashboard', 'activity'],
     queryFn: () => get<ActivityResponse>('/dashboard/activity'),
-    refetchInterval: 15_000,
+    // Fast while anything is searching/grabbing/downloading, 15s otherwise.
+    refetchInterval: (query) => {
+      const h = query.state.data?.queue_health
+      return h && h.searching + h.pending + h.downloading > 0
+        ? ACTIVE_POLL_MS
+        : IDLE_ACTIVITY_POLL_MS
+    },
   })
   const overview = useQuery<OverviewResponse>({
     queryKey: ['dashboard', 'overview'],
@@ -913,7 +858,7 @@ function DashboardPage() {
                   title={`${i.series_title} #${i.issue_number}`}
                   style={{ display: 'block' }}
                 >
-                  <Cover url={i.cover_url} size={52} />
+                  <Cover url={i.cover_url} width={52} radius={3} />
                 </Link>
               ))}
             </div>

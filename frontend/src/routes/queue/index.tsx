@@ -12,6 +12,11 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from '../../components/ui/alert-dialog'
+import { Cover } from '../../components/cover'
+import { ACTIVE_POLL_MS, queuePollInterval } from '../../lib/queuePolling'
+import { parseServerTime } from '../../lib/time'
+import { StatusText } from '../../components/status-text'
+import { Button } from '../../components/ui/button'
 import { Skeleton } from '../../components/ui/skeleton'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -52,23 +57,20 @@ export const Route = createFileRoute('/queue/')({
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-const JOB_STATUS_COLORS: Record<string, string> = {
-  queued: 'var(--color-muted)',
-  searching: 'var(--color-status-downloading)',
-  pending: 'var(--color-status-wanted)',
-  downloading: 'var(--color-status-downloading)',
-  completed: 'var(--color-status-downloaded)',
-  failed: 'var(--color-status-failed)',
-}
-
 function formatDateTime(iso: string | null): string {
   if (!iso) return '—'
-  return new Date(iso).toLocaleString('en-US', {
+  return new Date(parseServerTime(iso)).toLocaleString('en-US', {
     month: 'short',
     day: 'numeric',
     hour: 'numeric',
     minute: '2-digit',
   })
+}
+
+/** The dashboard's activity card shows the same jobs, so keep it in step. */
+function invalidateQueueViews(queryClient: ReturnType<typeof useQueryClient>) {
+  queryClient.invalidateQueries({ queryKey: ['queue'] })
+  queryClient.invalidateQueries({ queryKey: ['dashboard', 'activity'] })
 }
 
 // ── Sub-components ────────────────────────────────────────────────────────────
@@ -77,27 +79,13 @@ function RetryButton({ jobId }: { jobId: number }) {
   const queryClient = useQueryClient()
   const { mutate, isPending } = useMutation({
     mutationFn: () => post(`/queue/retry/${jobId}`),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['queue'] }),
+    onSuccess: () => invalidateQueueViews(queryClient),
   })
 
   return (
-    <button
-      onClick={() => mutate()}
-      disabled={isPending}
-      style={{
-        fontSize: '0.72rem',
-        padding: '3px 8px',
-        borderRadius: '4px',
-        background: 'var(--color-accent)',
-        color: '#fff',
-        border: 'none',
-        cursor: isPending ? 'wait' : 'pointer',
-        opacity: isPending ? 0.7 : 1,
-        whiteSpace: 'nowrap',
-      }}
-    >
+    <Button size="xs" onClick={() => mutate()} disabled={isPending}>
       {isPending ? 'Retrying…' : 'Retry'}
-    </button>
+    </Button>
   )
 }
 
@@ -105,43 +93,26 @@ function RemoveButton({ jobId }: { jobId: number }) {
   const queryClient = useQueryClient()
   const { mutate } = useMutation({
     mutationFn: () => del(`/queue/${jobId}`),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['queue'] }),
+    onSuccess: () => invalidateQueueViews(queryClient),
   })
 
   return (
     <AlertDialog>
       <AlertDialogTrigger asChild>
-        <button
-          style={{
-            fontSize: '0.72rem',
-            padding: '3px 8px',
-            borderRadius: '4px',
-            background: 'transparent',
-            color: 'var(--color-muted)',
-            border: '1px solid var(--color-border)',
-            cursor: 'pointer',
-            whiteSpace: 'nowrap',
-          }}
-        >
+        <Button size="xs" variant="subtle">
           Remove
-        </button>
+        </Button>
       </AlertDialogTrigger>
-      <AlertDialogContent
-        size="sm"
-        style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border)' }}
-      >
+      <AlertDialogContent size="sm">
         <AlertDialogHeader>
-          <AlertDialogTitle style={{ color: 'var(--color-text)' }}>Remove job?</AlertDialogTitle>
-          <AlertDialogDescription style={{ color: 'var(--color-muted)' }}>
+          <AlertDialogTitle>Remove job?</AlertDialogTitle>
+          <AlertDialogDescription>
             This will permanently delete the download job. This action cannot be undone.
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <AlertDialogAction
-            onClick={() => mutate()}
-            style={{ background: 'var(--color-status-failed)', color: '#fff', border: 'none' }}
-          >
+          <AlertDialogAction variant="destructive" onClick={() => mutate()}>
             Remove
           </AlertDialogAction>
         </AlertDialogFooter>
@@ -157,11 +128,16 @@ const GRID_COLS = '50px 1fr 90px 56px 136px 136px 112px'
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 function QueuePage() {
-  const { data: jobs, isLoading } = useQuery<DownloadJob[]>({
+  // dataUpdatedAt is read only so every refetch re-renders: identical data would
+  // otherwise skip the render, leaving the Live badge up after the queue goes idle.
+  const { data: jobs, isLoading, dataUpdatedAt } = useQuery<DownloadJob[]>({
     queryKey: ['queue'],
     queryFn: () => get<DownloadJob[]>('/queue/'),
-    refetchInterval: 30_000,
+    // 5s while a job is searching/grabbing/downloading (or was just queued), 30s
+    // otherwise — see lib/queuePolling.ts. Pauses automatically in background tabs.
+    refetchInterval: (query) => queuePollInterval(query.state.data),
   })
+  const live = dataUpdatedAt > 0 && queuePollInterval(jobs) === ACTIVE_POLL_MS
 
   return (
     <div className="p-6">
@@ -173,6 +149,29 @@ function QueuePage() {
         {!isLoading && jobs !== undefined && (
           <p style={{ fontSize: '0.875rem', color: 'var(--color-muted)', marginTop: '4px' }}>
             {jobs.length} {jobs.length === 1 ? 'job' : 'jobs'}
+            {live && (
+              <span
+                title="Refreshing every few seconds while downloads are in progress"
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '5px',
+                  marginLeft: '10px',
+                  color: 'var(--color-status-downloading)',
+                }}
+              >
+                <span
+                  className="animate-pulse"
+                  style={{
+                    width: 7,
+                    height: 7,
+                    borderRadius: '50%',
+                    background: 'var(--color-status-downloading)',
+                  }}
+                />
+                Live
+              </span>
+            )}
           </p>
         )}
       </div>
@@ -245,22 +244,7 @@ function QueuePage() {
                 }}
               >
                 {/* Cover thumbnail */}
-                {job.issue?.cover_url ? (
-                  <img
-                    src={job.issue.cover_url}
-                    alt=""
-                    style={{ width: 36, height: 50, objectFit: 'cover', borderRadius: '3px' }}
-                  />
-                ) : (
-                  <div
-                    style={{
-                      width: 36,
-                      height: 50,
-                      borderRadius: '3px',
-                      background: 'var(--color-border)',
-                    }}
-                  />
-                )}
+                <Cover url={job.issue?.cover_url} width={36} height={50} radius={3} />
 
                 {/* Series + Issue */}
                 <div style={{ minWidth: 0 }}>
@@ -299,16 +283,7 @@ function QueuePage() {
                 </div>
 
                 {/* Status badge */}
-                <span
-                  style={{
-                    fontSize: '0.72rem',
-                    fontWeight: 600,
-                    textTransform: 'capitalize',
-                    color: JOB_STATUS_COLORS[job.status] ?? 'var(--color-muted)',
-                  }}
-                >
-                  {job.status}
-                </span>
+                <StatusText status={job.status} className="text-[0.72rem]" />
 
                 {/* Attempts */}
                 <span

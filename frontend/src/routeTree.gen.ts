@@ -18,6 +18,7 @@ import { Route as PullListIndexRouteImport } from './routes/pull-list/index'
 import { Route as DashboardIndexRouteImport } from './routes/dashboard/index'
 import { Route as CalendarIndexRouteImport } from './routes/calendar/index'
 import { Route as ArcsIndexRouteImport } from './routes/arcs/index'
+import { Route as SettingsWebhooksIndexRouteImport } from './routes/settings/webhooks/index'
 import { Route as SettingsPostProcessingIndexRouteImport } from './routes/settings/post-processing/index'
 import { Route as SettingsLibraryImportIndexRouteImport } from './routes/settings/library-import/index'
 import { Route as SettingsIndexersIndexRouteImport } from './routes/settings/indexers/index'
@@ -72,6 +73,11 @@ const ArcsIndexRoute = ArcsIndexRouteImport.update({
   id: '/arcs/',
   path: '/arcs/',
   getParentRoute: () => rootRouteImport,
+} as any)
+const SettingsWebhooksIndexRoute = SettingsWebhooksIndexRouteImport.update({
+  id: '/webhooks/',
+  path: '/webhooks/',
+  getParentRoute: () => SettingsRoute,
 } as any)
 const SettingsPostProcessingIndexRoute =
   SettingsPostProcessingIndexRouteImport.update({
@@ -141,6 +147,7 @@ export interface FileRoutesByFullPath {
   '/settings/indexers/': typeof SettingsIndexersIndexRoute
   '/settings/library-import/': typeof SettingsLibraryImportIndexRoute
   '/settings/post-processing/': typeof SettingsPostProcessingIndexRoute
+  '/settings/webhooks/': typeof SettingsWebhooksIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -160,6 +167,7 @@ export interface FileRoutesByTo {
   '/settings/indexers': typeof SettingsIndexersIndexRoute
   '/settings/library-import': typeof SettingsLibraryImportIndexRoute
   '/settings/post-processing': typeof SettingsPostProcessingIndexRoute
+  '/settings/webhooks': typeof SettingsWebhooksIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -181,6 +189,7 @@ export interface FileRoutesById {
   '/settings/indexers/': typeof SettingsIndexersIndexRoute
   '/settings/library-import/': typeof SettingsLibraryImportIndexRoute
   '/settings/post-processing/': typeof SettingsPostProcessingIndexRoute
+  '/settings/webhooks/': typeof SettingsWebhooksIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -203,6 +212,7 @@ export interface FileRouteTypes {
     | '/settings/indexers/'
     | '/settings/library-import/'
     | '/settings/post-processing/'
+    | '/settings/webhooks/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -222,6 +232,7 @@ export interface FileRouteTypes {
     | '/settings/indexers'
     | '/settings/library-import'
     | '/settings/post-processing'
+    | '/settings/webhooks'
   id:
     | '__root__'
     | '/'
@@ -242,6 +253,7 @@ export interface FileRouteTypes {
     | '/settings/indexers/'
     | '/settings/library-import/'
     | '/settings/post-processing/'
+    | '/settings/webhooks/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -322,6 +334,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ArcsIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/settings/webhooks/': {
+      id: '/settings/webhooks/'
+      path: '/webhooks'
+      fullPath: '/settings/webhooks/'
+      preLoaderRoute: typeof SettingsWebhooksIndexRouteImport
+      parentRoute: typeof SettingsRoute
+    }
     '/settings/post-processing/': {
       id: '/settings/post-processing/'
       path: '/post-processing'
@@ -397,6 +416,7 @@ interface SettingsRouteChildren {
   SettingsIndexersIndexRoute: typeof SettingsIndexersIndexRoute
   SettingsLibraryImportIndexRoute: typeof SettingsLibraryImportIndexRoute
   SettingsPostProcessingIndexRoute: typeof SettingsPostProcessingIndexRoute
+  SettingsWebhooksIndexRoute: typeof SettingsWebhooksIndexRoute
 }
 
 const SettingsRouteChildren: SettingsRouteChildren = {
@@ -408,6 +428,7 @@ const SettingsRouteChildren: SettingsRouteChildren = {
   SettingsIndexersIndexRoute: SettingsIndexersIndexRoute,
   SettingsLibraryImportIndexRoute: SettingsLibraryImportIndexRoute,
   SettingsPostProcessingIndexRoute: SettingsPostProcessingIndexRoute,
+  SettingsWebhooksIndexRoute: SettingsWebhooksIndexRoute,
 }
 
 const SettingsRouteWithChildren = SettingsRoute._addFileChildren(

@@ -25,7 +25,7 @@ from pullbox.schemas import (
     SyncIssuesResponse,
     UpdateSeriesRequest,
 )
-from pullbox.services import series_scan
+from pullbox.services import series_scan, webhooks
 from pullbox.services.arcs import enrich_issue_arcs
 from pullbox.services.general import resolve_library_path
 from pullbox.services.library_import import normalize_issue_number
@@ -127,7 +127,12 @@ async def add_series(
         cover_url=volume.get("cover_url"),
         description=volume.get("description"),
         subscribed=body.subscribed,
-        auto_download=body.auto_download,
+        # Subscribing means "get this for me", so it turns on auto-download unless
+        # the caller said otherwise. The flag stays independent so it can be
+        # switched off per series afterwards.
+        auto_download=(
+            body.auto_download if body.auto_download is not None else body.subscribed
+        ),
     )
     db.add(series)
     await db.flush()
@@ -140,6 +145,11 @@ async def add_series(
         series.subscribed,
         series.auto_download,
     )
+    # Commit here (get_db's later commit becomes a no-op) so the notification
+    # can never reach a receiver before the row it describes is visible.
+    payload = {"series": webhooks.build_series_payload(series)}
+    await db.commit()
+    webhooks.emit("series.added", payload)
     return SeriesDetailResponse.model_validate(series)
 
 
@@ -225,10 +235,15 @@ async def enrich_series(series_id: int, provider: MetadataProviderDep, db: DbDep
 async def update_series(series_id: int, body: UpdateSeriesRequest, db: DbDep):
     series = await _get_series_or_404(series_id, db)
 
+    # Only a false → true transition implies auto-download, so a later explicit
+    # opt-out is not undone by re-saving an already-subscribed series.
+    newly_subscribed = bool(body.subscribed) and not series.subscribed
     if body.subscribed is not None:
         series.subscribed = body.subscribed
     if body.auto_download is not None:
         series.auto_download = body.auto_download
+    elif newly_subscribed:
+        series.auto_download = True
 
     await db.flush()
     await db.refresh(series)

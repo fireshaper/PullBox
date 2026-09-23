@@ -9,6 +9,7 @@ const SETTINGS_NAV = [
   { to: '/settings/indexers', label: 'Indexers' },
   { to: '/settings/download-clients', label: 'Download Clients' },
   { to: '/settings/post-processing', label: 'Post-Download' },
+  { to: '/settings/webhooks', label: 'Webhooks' },
   { to: '/settings/library-import', label: 'Import Library' },
   { to: '/settings/file-health', label: 'File Health' },
   { to: '/settings/duplicates', label: 'Duplicate Series' },

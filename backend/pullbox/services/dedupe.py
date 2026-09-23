@@ -93,6 +93,28 @@ async def find_series_for_release(db, ids: dict, title: str | None) -> Series | 
     return match
 
 
+async def adopt_provider_ids(db, series: Series, record: dict) -> None:
+    """Copy whichever id ``series`` is missing from a provider *detail* record.
+
+    Metron's list endpoints omit ``cv_id`` but its detail endpoints carry it, so
+    a series first seen on the weekly feed can pick up its ComicVine id the
+    first time anything fetches its detail (publisher enrichment does). An id
+    already held by a different row is left alone — both columns are UNIQUE,
+    and two rows for one book is the duplicate case the Settings merge exists
+    for, not something to resolve by silently stealing the id.
+    """
+    for attr in ("metron_id", "comicvine_id"):
+        value = record.get(attr)
+        if not value or getattr(series, attr) is not None:
+            continue
+        column = getattr(Series, attr)
+        taken = (
+            await db.execute(select(Series.id).where(column == value, Series.id != series.id))
+        ).scalar_one_or_none()
+        if taken is None:
+            setattr(series, attr, value)
+
+
 async def find_issue_for_release(db, ids: dict, series_id: int, issue_number: str) -> Issue | None:
     """The Issue counterpart of :func:`find_series_for_release`.
 

@@ -2,6 +2,7 @@ import { createFileRoute, Link } from '@tanstack/react-router'
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { del, get, post } from '../../../api/client'
+import { Button } from '../../../components/ui/button'
 import { Input } from '../../../components/ui/input'
 import { Checkbox } from '../../../components/ui/checkbox'
 import { Skeleton } from '../../../components/ui/skeleton'
@@ -147,15 +148,6 @@ function SummaryBar({
 
 // ── Per-finding actions ───────────────────────────────────────────────────────
 
-const actionButtonStyle = {
-  fontSize: '0.75rem',
-  padding: '4px 10px',
-  borderRadius: '5px',
-  background: 'transparent',
-  border: '1px solid var(--color-border)',
-  cursor: 'pointer',
-  whiteSpace: 'nowrap' as const,
-}
 
 function FindingActions({ finding }: { finding: FileIssue }) {
   const queryClient = useQueryClient()
@@ -181,26 +173,24 @@ function FindingActions({ finding }: { finding: FileIssue }) {
           Still failing
         </span>
       )}
-      <button
+      <Button
+        variant="outline"
+        size="sm"
         onClick={() => recheck.mutate()}
         disabled={recheck.isPending}
         title="Re-inspect this file, including a full CRC check"
-        style={{
-          ...actionButtonStyle,
-          color: 'var(--color-text)',
-          cursor: recheck.isPending ? 'wait' : 'pointer',
-        }}
       >
         {recheck.isPending ? 'Checking…' : 'Re-check'}
-      </button>
-      <button
+      </Button>
+      <Button
+        variant="subtle"
+        size="sm"
         onClick={() => dismiss.mutate()}
         disabled={dismiss.isPending}
         title="Hide this finding until the next scan"
-        style={{ ...actionButtonStyle, color: 'var(--color-muted)' }}
       >
         Dismiss
-      </button>
+      </Button>
     </div>
   )
 }
@@ -350,23 +340,13 @@ function FileHealthPage() {
               if (e.key === 'Enter' && !scan.isPending) scan.mutate()
             }}
           />
-          <button
+          <Button
+            size="lg"
             onClick={() => scan.mutate()}
             disabled={scan.isPending}
-            style={{
-              fontSize: '0.875rem',
-              padding: '6px 16px',
-              borderRadius: '6px',
-              background: scan.isPending ? 'var(--color-border)' : 'var(--color-accent)',
-              color: '#fff',
-              border: 'none',
-              cursor: scan.isPending ? 'wait' : 'pointer',
-              fontWeight: 500,
-              whiteSpace: 'nowrap',
-            }}
           >
             {scan.isPending ? 'Scanning…' : 'Scan now'}
-          </button>
+          </Button>
         </div>
         <p style={{ fontSize: '0.72rem', color: 'var(--color-muted)', marginTop: '5px' }}>
           Leave blank to scan your library path. Files PullBox tracks are always checked,

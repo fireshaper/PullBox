@@ -2,6 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { get, post } from '../../../api/client'
+import { Button } from '../../../components/ui/button'
 import { Input } from '../../../components/ui/input'
 import { Checkbox } from '../../../components/ui/checkbox'
 
@@ -185,23 +186,13 @@ function LibraryImportPage() {
               if (e.key === 'Enter' && path.trim()) scan.mutate(path.trim())
             }}
           />
-          <button
+          <Button
+            size="lg"
             onClick={() => scan.mutate(path.trim())}
             disabled={!path.trim() || scan.isPending}
-            style={{
-              fontSize: '0.875rem',
-              padding: '6px 16px',
-              borderRadius: '6px',
-              background: path.trim() && !scan.isPending ? 'var(--color-accent)' : 'var(--color-border)',
-              color: '#fff',
-              border: 'none',
-              cursor: path.trim() && !scan.isPending ? 'pointer' : 'not-allowed',
-              fontWeight: 500,
-              whiteSpace: 'nowrap',
-            }}
           >
             {scan.isPending ? 'Scanning…' : 'Scan'}
-          </button>
+          </Button>
         </div>
         {scan.error && (
           <p style={{ fontSize: '0.8rem', color: 'var(--color-status-failed)', marginTop: '6px' }}>
@@ -227,18 +218,20 @@ function LibraryImportPage() {
             </p>
             {scanned.length > 0 && (
               <div style={{ display: 'flex', gap: '12px' }}>
-                <button
+                <Button
+                  variant="link"
+                  className="text-[0.8rem] font-normal"
                   onClick={() => setIncluded(scanned.map(() => true))}
-                  style={{ background: 'none', border: 'none', color: 'var(--color-accent)', cursor: 'pointer', fontSize: '0.8rem' }}
                 >
                   Select all
-                </button>
-                <button
+                </Button>
+                <Button
+                  variant="link"
+                  className="text-[0.8rem] font-normal text-muted"
                   onClick={() => setIncluded(scanned.map(() => false))}
-                  style={{ background: 'none', border: 'none', color: 'var(--color-muted)', cursor: 'pointer', fontSize: '0.8rem' }}
                 >
                   Clear
-                </button>
+                </Button>
               </div>
             )}
           </div>
@@ -289,25 +282,15 @@ function LibraryImportPage() {
           {/* Import action */}
           {scanned.length > 0 && (
             <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginTop: '20px' }}>
-              <button
+              <Button
+                size="lg"
                 onClick={runImport}
                 disabled={selectedCount === 0 || doImport.isPending}
-                style={{
-                  fontSize: '0.875rem',
-                  padding: '6px 16px',
-                  borderRadius: '6px',
-                  background:
-                    selectedCount > 0 && !doImport.isPending ? 'var(--color-accent)' : 'var(--color-border)',
-                  color: '#fff',
-                  border: 'none',
-                  cursor: selectedCount > 0 && !doImport.isPending ? 'pointer' : 'not-allowed',
-                  fontWeight: 500,
-                }}
               >
                 {doImport.isPending
                   ? 'Importing…'
                   : `Import ${selectedCount} series (${selectedFiles} files)`}
-              </button>
+              </Button>
               {doImport.error && (
                 <span style={{ fontSize: '0.8rem', color: 'var(--color-status-failed)' }}>
                   {doImport.error instanceof Error ? doImport.error.message : 'Import failed'}

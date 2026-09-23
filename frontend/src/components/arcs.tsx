@@ -1,4 +1,6 @@
 import { Layers } from 'lucide-react'
+import { Cover } from './cover'
+import { Badge } from './ui/badge'
 
 /** A story arc as the /api/arcs list returns it. `total` is the arc's true size
  *  from the metadata provider and is null until the arc's member list has been
@@ -64,45 +66,16 @@ export function ArcCover({
   name: string
   size?: number
 }) {
-  const height = Math.round(size * 1.4)
-  return url ? (
-    <img
-      src={url}
+  return (
+    <Cover
+      url={url}
       alt={name}
-      style={{ width: size, height, objectFit: 'cover', borderRadius: 4, flexShrink: 0 }}
+      width={size}
+      fallback={<Layers size={Math.round(size / 3)} style={{ color: 'var(--color-muted)' }} />}
     />
-  ) : (
-    <div
-      style={{
-        width: size,
-        height,
-        borderRadius: 4,
-        background: 'var(--color-border)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        flexShrink: 0,
-      }}
-    >
-      <Layers size={Math.round(size / 3)} style={{ color: 'var(--color-muted)' }} />
-    </div>
   )
 }
 
 export function SubscribedBadge() {
-  return (
-    <span
-      style={{
-        fontSize: '0.68rem',
-        fontWeight: 700,
-        padding: '2px 7px',
-        borderRadius: 4,
-        color: 'var(--color-accent)',
-        background: 'color-mix(in srgb, var(--color-accent) 15%, transparent)',
-        flexShrink: 0,
-      }}
-    >
-      Subscribed
-    </span>
-  )
+  return <Badge className="text-[0.68rem] normal-case tracking-normal">Subscribed</Badge>
 }

@@ -3,7 +3,10 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Search } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { get, post } from '../../api/client'
+import { Cover } from '../../components/cover'
+import { Button } from '../../components/ui/button'
 import { Skeleton } from '../../components/ui/skeleton'
+import { cn } from '../../lib/utils'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -67,20 +70,6 @@ function letterOf(title: string): string {
 const REVEAL_STEP = 40
 
 // ── Sub-components ────────────────────────────────────────────────────────────
-
-function CoverThumb({ url, alt }: { url: string | null; alt: string }) {
-  return url ? (
-    <img
-      src={url}
-      alt={alt}
-      style={{ width: 40, height: 55, objectFit: 'cover', borderRadius: '4px', flexShrink: 0 }}
-    />
-  ) : (
-    <div
-      style={{ width: 40, height: 55, borderRadius: '4px', background: 'var(--color-border)', flexShrink: 0 }}
-    />
-  )
-}
 
 const ROW_STYLE: React.CSSProperties = {
   display: 'flex',
@@ -350,7 +339,7 @@ function SeriesPage() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
               {searchResults.map((r) => (
                 <div key={idKey(r)} style={ROW_STYLE}>
-                  <CoverThumb url={r.cover_url} alt={r.title} />
+                  <Cover url={r.cover_url} alt={r.title} width={40} height={55} />
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div
                       style={{
@@ -382,36 +371,23 @@ function SeriesPage() {
                       In Library
                     </span>
                   ) : (
-                    <button
+                    <Button
                       onClick={() =>
                         addMutation.mutate({ metron_id: r.metron_id, comicvine_id: r.comicvine_id })
                       }
                       disabled={
                         addMutation.isPending && idKey(addMutation.variables) === idKey(r)
                       }
-                      style={{
-                        padding: '6px 14px',
-                        borderRadius: '5px',
-                        fontSize: '0.8rem',
-                        fontWeight: 600,
-                        background: 'var(--color-accent)',
-                        color: '#fff',
-                        border: 'none',
-                        cursor:
-                          addMutation.isPending && idKey(addMutation.variables) === idKey(r)
-                            ? 'wait'
-                            : 'pointer',
-                        flexShrink: 0,
-                        opacity:
-                          addMutation.isPending && idKey(addMutation.variables) !== idKey(r)
-                            ? 0.5
-                            : 1,
-                      }}
+                      className={cn(
+                        addMutation.isPending &&
+                          idKey(addMutation.variables) !== idKey(r) &&
+                          'opacity-50',
+                      )}
                     >
                       {addMutation.isPending && idKey(addMutation.variables) === idKey(r)
                         ? 'Adding…'
                         : 'Add'}
-                    </button>
+                    </Button>
                   )}
                 </div>
               ))}
@@ -456,7 +432,7 @@ function SeriesPage() {
                         tabIndex={0}
                         style={{ ...ROW_STYLE, cursor: 'pointer' }}
                       >
-                        <CoverThumb url={s.cover_url} alt={s.title} />
+                        <Cover url={s.cover_url} alt={s.title} width={40} height={55} />
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <div
                             style={{

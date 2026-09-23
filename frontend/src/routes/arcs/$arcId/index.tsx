@@ -1,9 +1,12 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, Download, HardDrive, RefreshCw } from 'lucide-react'
-import { type CSSProperties, useState } from 'react'
+import { useState } from 'react'
 import { ApiError, get, patch, post } from '../../../api/client'
 import { ArcCover, ArcProgress, type ArcListItem } from '../../../components/arcs'
+import { Cover } from '../../../components/cover'
+import { StatusText } from '../../../components/status-text'
+import { Button } from '../../../components/ui/button'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -45,28 +48,6 @@ export const Route = createFileRoute('/arcs/$arcId/')({
 })
 
 // ── Styling ───────────────────────────────────────────────────────────────────
-
-const STATUS_COLORS: Record<string, string> = {
-  wanted: 'var(--color-status-wanted)',
-  downloading: 'var(--color-status-downloading)',
-  downloaded: 'var(--color-status-downloaded)',
-  skipped: 'var(--color-status-skipped)',
-  failed: 'var(--color-status-failed)',
-  unknown: 'var(--color-muted)',
-}
-
-const ACTION_BUTTON: CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  gap: 6,
-  padding: '5px 12px',
-  borderRadius: 6,
-  fontSize: '0.8rem',
-  fontWeight: 600,
-  background: 'var(--color-surface)',
-  border: '1px solid var(--color-border)',
-  color: 'var(--color-text)',
-}
 
 function fmtDate(iso: string | null): string | null {
   if (!iso) return null
@@ -158,17 +139,7 @@ function IssueRow({ issue, arcId }: { issue: ArcIssueRow; arcId: number }) {
         borderRadius: 6,
       }}
     >
-      {issue.cover_url ? (
-        <img
-          src={issue.cover_url}
-          alt=""
-          style={{ width: 34, height: 48, objectFit: 'cover', borderRadius: 3, flexShrink: 0 }}
-        />
-      ) : (
-        <div
-          style={{ width: 34, height: 48, borderRadius: 3, background: 'var(--color-border)', flexShrink: 0 }}
-        />
-      )}
+      <Cover url={issue.cover_url} width={34} radius={3} />
 
       <div style={{ flex: 1, minWidth: 0 }}>
         <button
@@ -207,38 +178,12 @@ function IssueRow({ issue, arcId }: { issue: ArcIssueRow; arcId: number }) {
       {issue.has_file && (
         <HardDrive size={13} style={{ color: 'var(--color-status-downloaded)', flexShrink: 0 }} />
       )}
-      <span
-        style={{
-          fontSize: '0.72rem',
-          fontWeight: 600,
-          textTransform: 'capitalize',
-          color: STATUS_COLORS[issue.status] ?? 'var(--color-muted)',
-          flexShrink: 0,
-          width: 78,
-          textAlign: 'right',
-        }}
-      >
-        {issue.status}
-      </span>
+      <StatusText status={issue.status} className="w-[78px] text-right text-[0.72rem]" />
 
       {canDownload && (
-        <button
-          onClick={() => downloadMutation.mutate()}
-          disabled={downloadMutation.isPending}
-          style={{
-            padding: '3px 10px',
-            borderRadius: 4,
-            fontSize: '0.75rem',
-            fontWeight: 600,
-            border: 'none',
-            background: 'var(--color-accent)',
-            color: '#fff',
-            cursor: downloadMutation.isPending ? 'wait' : 'pointer',
-            flexShrink: 0,
-          }}
-        >
+        <Button size="sm" onClick={() => downloadMutation.mutate()} disabled={downloadMutation.isPending}>
           {downloadMutation.isPending ? '…' : 'Download'}
-        </button>
+        </Button>
       )}
     </div>
   )
@@ -304,23 +249,13 @@ function ArcDetailPage() {
 
   return (
     <div className="p-6">
-      <button
+      <Button
+        variant="link"
+        className="mb-4 font-normal text-muted hover:text-text hover:no-underline"
         onClick={() => navigate({ to: '/arcs', search: { filter: 'all' } })}
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 6,
-          background: 'none',
-          border: 'none',
-          padding: 0,
-          marginBottom: 16,
-          cursor: 'pointer',
-          color: 'var(--color-muted)',
-          fontSize: '0.8rem',
-        }}
       >
         <ArrowLeft size={14} /> Story Arcs
-      </button>
+      </Button>
 
       {/* Header */}
       <div style={{ display: 'flex', gap: 18, marginBottom: 20 }}>
@@ -361,29 +296,18 @@ function ArcDetailPage() {
           </div>
 
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-            <button
+            <Button
+              variant="outline"
               onClick={() => syncMutation.mutate(false)}
               disabled={syncMutation.isPending}
-              style={{ ...ACTION_BUTTON, cursor: syncMutation.isPending ? 'wait' : 'pointer' }}
             >
               <RefreshCw size={13} />
               {syncMutation.isPending ? 'Finding issues…' : 'Find Missing Issues'}
-            </button>
-            <button
+            </Button>
+            <Button
+              variant={missingCount === 0 ? 'outline' : 'default'}
               onClick={() => downloadMutation.mutate()}
               disabled={downloadMutation.isPending || missingCount === 0}
-              style={{
-                ...ACTION_BUTTON,
-                background: missingCount === 0 ? 'var(--color-surface)' : 'var(--color-accent)',
-                border: missingCount === 0 ? '1px solid var(--color-border)' : 'none',
-                color: missingCount === 0 ? 'var(--color-muted)' : '#fff',
-                cursor:
-                  downloadMutation.isPending
-                    ? 'wait'
-                    : missingCount === 0
-                      ? 'default'
-                      : 'pointer',
-              }}
             >
               <Download size={13} />
               {downloadMutation.isPending
@@ -391,7 +315,7 @@ function ArcDetailPage() {
                 : missingCount === 0
                   ? 'Nothing to download'
                   : `Download ${missingCount} Missing`}
-            </button>
+            </Button>
           </div>
         </div>
       </div>

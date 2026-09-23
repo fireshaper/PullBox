@@ -9,8 +9,12 @@ import {
   Layers,
   RefreshCw,
 } from 'lucide-react'
-import { type CSSProperties, useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { ApiError, get, patch, post } from '../../../api/client'
+import { Cover } from '../../../components/cover'
+import { StatusText } from '../../../components/status-text'
+import { Badge } from '../../../components/ui/badge'
+import { Button } from '../../../components/ui/button'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -89,30 +93,6 @@ export const Route = createFileRoute('/series/$seriesId/')({
   component: SeriesDetailPage,
 })
 
-// ── Status colours ────────────────────────────────────────────────────────────
-
-const STATUS_COLORS: Record<string, string> = {
-  wanted: 'var(--color-status-wanted)',
-  downloading: 'var(--color-status-downloading)',
-  downloaded: 'var(--color-status-downloaded)',
-  skipped: 'var(--color-status-skipped)',
-  failed: 'var(--color-status-failed)',
-  unknown: 'var(--color-muted)',
-}
-
-// Shared look for the buttons in the Issues header (cursor/opacity per button).
-const ACTION_BUTTON: CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  gap: '6px',
-  padding: '4px 12px',
-  borderRadius: '6px',
-  fontSize: '0.8rem',
-  background: 'var(--color-surface)',
-  border: '1px solid var(--color-border)',
-  color: 'var(--color-text)',
-}
-
 // ── Issue action buttons ──────────────────────────────────────────────────────
 
 function IssueActions({ issue, seriesId }: { issue: Issue; seriesId: number }) {
@@ -155,35 +135,21 @@ function IssueActions({ issue, seriesId }: { issue: Issue; seriesId: number }) {
     label: string,
     onClick: () => void,
     pending: boolean,
-    variant: 'primary' | 'ghost' = 'ghost',
+    variant: 'default' | 'subtle' = 'subtle',
   ) => (
-    <button
-      onClick={onClick}
-      disabled={pending}
-      style={{
-        padding: '3px 10px',
-        borderRadius: '4px',
-        fontSize: '0.75rem',
-        fontWeight: 600,
-        border: variant === 'primary' ? 'none' : '1px solid var(--color-border)',
-        cursor: pending ? 'wait' : 'pointer',
-        background: variant === 'primary' ? 'var(--color-accent)' : 'transparent',
-        color: variant === 'primary' ? '#fff' : 'var(--color-muted)',
-        flexShrink: 0,
-      }}
-    >
+    <Button size="sm" variant={variant} onClick={onClick} disabled={pending}>
       {pending ? '…' : label}
-    </button>
+    </Button>
   )
 
   if (issue.status === 'skipped') {
-    return actionBtn('Want', () => wantMutation.mutate(), wantMutation.isPending, 'ghost')
+    return actionBtn('Want', () => wantMutation.mutate(), wantMutation.isPending)
   }
 
   return (
     <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
       {(issue.status === 'unknown' || issue.status === 'failed') &&
-        actionBtn('Download', () => downloadMutation.mutate(), downloadMutation.isPending, 'primary')}
+        actionBtn('Download', () => downloadMutation.mutate(), downloadMutation.isPending, 'default')}
       {issue.status === 'wanted' && (
         <span
           style={{
@@ -232,17 +198,7 @@ function ArcMemberRow({
         <span style={{ fontWeight: 600, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {member.local_series_title} #{member.local_issue_number}
         </span>
-        <span
-          style={{
-            fontSize: '0.7rem',
-            fontWeight: 600,
-            textTransform: 'capitalize',
-            color: STATUS_COLORS[member.local_status ?? 'unknown'] ?? 'var(--color-muted)',
-            flexShrink: 0,
-          }}
-        >
-          {member.local_status}
-        </span>
+        <StatusText status={member.local_status} />
       </button>
     )
   }
@@ -450,39 +406,19 @@ function SeriesDetailPage() {
   return (
     <div className="p-6">
       {/* Back */}
-      <button
+      <Button
+        variant="link"
+        className="mb-6 text-sm font-normal text-muted hover:text-text hover:no-underline"
         onClick={() => navigate({ to: '/series' })}
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: '6px',
-          marginBottom: '24px',
-          background: 'none',
-          border: 'none',
-          color: 'var(--color-muted)',
-          cursor: 'pointer',
-          fontSize: '0.875rem',
-          padding: 0,
-        }}
       >
         <ArrowLeft size={16} />
         Back to Series
-      </button>
+      </Button>
 
       {/* Header */}
       <div style={{ display: 'flex', gap: '24px', marginBottom: '40px', alignItems: 'flex-start' }}>
         {/* Cover */}
-        {series.cover_url ? (
-          <img
-            src={series.cover_url}
-            alt={series.title}
-            style={{ width: 160, height: 240, objectFit: 'cover', borderRadius: '8px', flexShrink: 0 }}
-          />
-        ) : (
-          <div
-            style={{ width: 160, height: 240, borderRadius: '8px', background: 'var(--color-border)', flexShrink: 0 }}
-          />
-        )}
+        <Cover url={series.cover_url} alt={series.title} width={160} height={240} radius={8} eager />
 
         {/* Metadata */}
         <div style={{ flex: 1, minWidth: 0 }}>
@@ -519,22 +455,14 @@ function SeriesDetailPage() {
               marginBottom: '20px',
             }}
           >
-            <button
+            <Button
+              size="xl"
+              variant={series.subscribed ? 'outline' : 'default'}
               onClick={() => subscribeMutation.mutate(!series.subscribed)}
               disabled={subscribeMutation.isPending}
-              style={{
-                padding: '8px 20px',
-                borderRadius: '6px',
-                fontWeight: 600,
-                fontSize: '0.875rem',
-                cursor: subscribeMutation.isPending ? 'wait' : 'pointer',
-                background: series.subscribed ? 'var(--color-surface)' : 'var(--color-accent)',
-                color: series.subscribed ? 'var(--color-text)' : '#fff',
-                border: series.subscribed ? '1px solid var(--color-border)' : 'none',
-              }}
             >
               {series.subscribed ? 'Unsubscribe' : 'Add to Pullbox'}
-            </button>
+            </Button>
 
             {series.subscribed && (
               <label
@@ -594,41 +522,31 @@ function SeriesDetailPage() {
             Issues{issues ? ` (${issues.length})` : ''}
           </h2>
           <div style={{ display: 'flex', gap: '8px' }}>
-            <button
+            <Button
+              variant="outline"
               onClick={() => markAllWantedMutation.mutate()}
               disabled={markAllWantedMutation.isPending || !issues || issues.every(i => !['unknown', 'failed'].includes(i.status))}
-              style={{
-                ...ACTION_BUTTON,
-                cursor: markAllWantedMutation.isPending ? 'wait' : 'pointer',
-                opacity: (!issues || issues.every(i => !['unknown', 'failed'].includes(i.status))) ? 0.4 : 1,
-              }}
             >
               {markAllWantedMutation.isPending ? 'Marking…' : 'Mark all as Wanted'}
-            </button>
-            <button
+            </Button>
+            <Button
+              variant="outline"
               onClick={() => rescanMutation.mutate()}
               disabled={rescanMutation.isPending}
               title="Check this series' folder for files added or deleted outside PullBox"
-              style={{
-                ...ACTION_BUTTON,
-                cursor: rescanMutation.isPending ? 'wait' : 'pointer',
-              }}
             >
               <HardDrive size={12} />
               {rescanMutation.isPending ? 'Scanning…' : 'Re-scan Files'}
-            </button>
-            <button
+            </Button>
+            <Button
+              variant="outline"
               onClick={() => syncMutation.mutate()}
               disabled={syncMutation.isPending}
               title="Refresh metadata and the issue list from Metron (ComicVine as fallback)"
-              style={{
-                ...ACTION_BUTTON,
-                cursor: syncMutation.isPending ? 'wait' : 'pointer',
-              }}
             >
               <RefreshCw size={12} />
               {syncMutation.isPending ? 'Syncing…' : 'Sync Series'}
-            </button>
+            </Button>
           </div>
         </div>
 
@@ -735,25 +653,13 @@ function SeriesDetailPage() {
                       </span>
                     </button>
                     {hasArcs && (
-                      <span
+                      <Badge
                         title={issue.arcs.map((a) => a.name).join(', ')}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '4px',
-                          flexShrink: 0,
-                          padding: '2px 8px',
-                          borderRadius: '10px',
-                          fontSize: '0.7rem',
-                          fontWeight: 600,
-                          background: 'color-mix(in srgb, var(--color-accent) 15%, transparent)',
-                          border: '1px solid color-mix(in srgb, var(--color-accent) 40%, transparent)',
-                          color: 'var(--color-accent)',
-                        }}
+                        className="normal-case tracking-normal text-[0.7rem] font-semibold rounded-full px-2 border-accent/40"
                       >
                         <Layers size={11} />
                         {issue.arcs.length === 1 ? issue.arcs[0].name : `${issue.arcs.length} arcs`}
-                      </span>
+                      </Badge>
                     )}
                     {(issue.store_date ?? issue.cover_date) && (
                       <span style={{ fontSize: '0.75rem', color: 'var(--color-muted)', flexShrink: 0 }}>
@@ -763,19 +669,7 @@ function SeriesDetailPage() {
                         )}
                       </span>
                     )}
-                    <span
-                      style={{
-                        fontSize: '0.7rem',
-                        fontWeight: 600,
-                        textTransform: 'capitalize',
-                        color: STATUS_COLORS[issue.status] ?? 'var(--color-muted)',
-                        flexShrink: 0,
-                        minWidth: '60px',
-                        textAlign: 'right',
-                      }}
-                    >
-                      {issue.status}
-                    </span>
+                    <StatusText status={issue.status} className="min-w-[60px] text-right" />
                     <IssueActions issue={issue} seriesId={id} />
                   </div>
                   {isExpanded && (

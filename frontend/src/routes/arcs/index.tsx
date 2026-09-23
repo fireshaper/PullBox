@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Search } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { get } from '../../api/client'
+import { FilterTab } from '../../components/filter-tab'
 import { ArcCover, ArcProgress, SubscribedBadge, type ArcListItem } from '../../components/arcs'
 import { Skeleton } from '../../components/ui/skeleton'
 
@@ -48,17 +49,6 @@ function ArcsPage() {
     )
   }, [arcs, debounced])
 
-  const tabStyle = (active: boolean): React.CSSProperties => ({
-    padding: '5px 12px',
-    borderRadius: 6,
-    fontSize: '0.8rem',
-    fontWeight: 600,
-    cursor: 'pointer',
-    border: '1px solid var(--color-border)',
-    background: active ? 'color-mix(in srgb, var(--color-accent) 15%, transparent)' : 'transparent',
-    color: active ? 'var(--color-text)' : 'var(--color-muted)',
-  })
-
   return (
     <div className="p-6">
       <div
@@ -74,18 +64,18 @@ function ArcsPage() {
           Story Arcs
         </h1>
         <div style={{ display: 'flex', gap: 6 }}>
-          <button
-            style={tabStyle(filter !== 'subscribed')}
+          <FilterTab
+            active={filter !== 'subscribed'}
             onClick={() => navigate({ to: '/arcs', search: { filter: 'all' } })}
           >
             All
-          </button>
-          <button
-            style={tabStyle(filter === 'subscribed')}
+          </FilterTab>
+          <FilterTab
+            active={filter === 'subscribed'}
             onClick={() => navigate({ to: '/arcs', search: { filter: 'subscribed' } })}
           >
             Subscribed
-          </button>
+          </FilterTab>
         </div>
       </div>
 

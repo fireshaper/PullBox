@@ -644,3 +644,73 @@ def test_list_issues_status_filter(client):
 def test_list_issues_404_for_bad_series(client):
     resp = client.get("/api/series/99999/issues")
     assert resp.status_code == 404
+
+
+# ── Subscribing implies auto-download ────────────────────────────────────────
+
+
+def _add_plain(client, metron_id="m88001", **body):
+    """Add a series via the API, returning the response JSON."""
+    volume = {**FAKE_VOLUME, "metron_id": metron_id, "comicvine_id": None, "title": "Sub Test"}
+    app.dependency_overrides[get_metadata_provider] = _make_mock_provider(volume=volume)
+    try:
+        resp = client.post("/api/series/", json={"metron_id": metron_id, **body})
+        assert resp.status_code == 201
+        return resp.json()
+    finally:
+        app.dependency_overrides.pop(get_metadata_provider, None)
+
+
+def test_subscribing_turns_on_auto_download(client):
+    """Subscribing means "get this for me", so it enables auto_download."""
+    sid = _add_plain(client)["id"]
+
+    resp = client.patch(f"/api/series/{sid}", json={"subscribed": True})
+    assert resp.status_code == 200
+    assert resp.json()["subscribed"] is True
+    assert resp.json()["auto_download"] is True
+
+
+def test_explicit_auto_download_false_wins_over_subscribe(client):
+    """An explicit auto_download in the same request is not overridden."""
+    sid = _add_plain(client)["id"]
+
+    resp = client.patch(
+        f"/api/series/{sid}", json={"subscribed": True, "auto_download": False}
+    )
+    assert resp.json()["subscribed"] is True
+    assert resp.json()["auto_download"] is False
+
+
+def test_auto_download_optout_survives_resaving_subscribed(client):
+    """Turning auto_download off then re-saving subscribed=True does not re-enable it.
+
+    Only a false → true transition implies auto-download, so a deliberate opt-out
+    sticks.
+    """
+    sid = _add_plain(client)["id"]
+    client.patch(f"/api/series/{sid}", json={"subscribed": True})
+    client.patch(f"/api/series/{sid}", json={"auto_download": False})
+
+    resp = client.patch(f"/api/series/{sid}", json={"subscribed": True})
+    assert resp.json()["auto_download"] is False
+
+
+def test_unsubscribing_leaves_auto_download_alone(client):
+    """Unsubscribing is not a transition into subscribed, so it implies nothing."""
+    sid = _add_plain(client)["id"]
+    client.patch(f"/api/series/{sid}", json={"subscribed": True})
+
+    resp = client.patch(f"/api/series/{sid}", json={"subscribed": False})
+    assert resp.json()["subscribed"] is False
+    assert resp.json()["auto_download"] is True
+
+
+def test_add_series_subscribed_defaults_auto_download_on(client):
+    """Adding a series already subscribed enables auto_download too."""
+    assert _add_plain(client, subscribed=True)["auto_download"] is True
+
+
+def test_add_series_unsubscribed_leaves_auto_download_off(client):
+    """The default add path is unchanged."""
+    assert _add_plain(client, subscribed=False)["auto_download"] is False

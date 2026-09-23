@@ -45,7 +45,12 @@ def _run_migrations() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from pullbox.logging_config import configure_logging
-    from pullbox.scheduler import build_scheduler, daily_queue_sweep, register_schedules
+    from pullbox.scheduler import (
+        build_scheduler,
+        daily_queue_sweep,
+        register_schedules,
+        supervise_scheduler,
+    )
 
     deps._settings = Settings()
 
@@ -86,8 +91,18 @@ async def lifespan(app: FastAPI):
         # this one awaits network searches for minutes, so a bare create_task can be
         # garbage-collected mid-sweep.
         app.state.startup_sweep = asyncio.create_task(daily_queue_sweep())
+        app.state.scheduler_watchdog = asyncio.create_task(
+            supervise_scheduler(scheduler, deps._settings)
+        )
         yield
+        app.state.scheduler_watchdog.cancel()
         logger.info("PullBox shutting down")
+        # Give fire-and-forget webhook deliveries a moment to land before the
+        # loop closes under them (a completed download's notification is the
+        # last thing worth losing on a restart).
+        from pullbox.services.webhooks import wait_for_inflight  # noqa: PLC0415
+
+        await wait_for_inflight()
 
     if database._engine is not None:
         await database._engine.dispose()
@@ -116,6 +131,7 @@ from pullbox.routers.queue import router as queue_router  # noqa: E402
 from pullbox.routers.releases import router as releases_router  # noqa: E402
 from pullbox.routers.series import router as series_router  # noqa: E402
 from pullbox.routers.settings import router as settings_router  # noqa: E402
+from pullbox.routers.webhooks import router as webhooks_router  # noqa: E402
 
 app.include_router(arcs_router)
 app.include_router(calendar_router)
@@ -131,6 +147,7 @@ app.include_router(queue_router)
 app.include_router(releases_router)
 app.include_router(series_router)
 app.include_router(settings_router)
+app.include_router(webhooks_router)
 
 
 class SPAStaticFiles(StaticFiles):

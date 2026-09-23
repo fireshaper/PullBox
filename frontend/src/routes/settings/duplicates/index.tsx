@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, ArrowRight, Check, Merge } from 'lucide-react'
 import { useState } from 'react'
 import { get, post } from '../../../api/client'
+import { Button } from '../../../components/ui/button'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -142,28 +143,15 @@ function MergeButton({ group }: { group: DuplicateGroup }) {
   return (
     <AlertDialog>
       <AlertDialogTrigger asChild>
-        <button
+        <Button
+          size="sm"
           disabled={mutation.isPending}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '6px',
-            fontSize: '0.75rem',
-            fontWeight: 600,
-            padding: '5px 12px',
-            borderRadius: '5px',
-            background: 'var(--color-accent)',
-            color: '#fff',
-            border: 'none',
-            cursor: mutation.isPending ? 'default' : 'pointer',
-            opacity: mutation.isPending ? 0.6 : 1,
-          }}
         >
           <Merge size={13} />
           {mutation.isPending ? 'Merging…' : 'Merge'}
-        </button>
+        </Button>
       </AlertDialogTrigger>
-      <AlertDialogContent style={{ background: 'var(--color-surface)' }}>
+      <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>Merge {group.rows.length} series into one?</AlertDialogTitle>
           <AlertDialogDescription>
@@ -207,28 +195,15 @@ function MergeAllButton({ count }: { count: number }) {
     <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
       <AlertDialog>
         <AlertDialogTrigger asChild>
-          <button
+          <Button
+            variant={count === 0 ? 'outline' : 'default'}
             disabled={mutation.isPending || count === 0}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '6px',
-              fontSize: '0.8rem',
-              fontWeight: 600,
-              padding: '7px 14px',
-              borderRadius: '6px',
-              background: count === 0 ? 'var(--color-surface)' : 'var(--color-accent)',
-              color: count === 0 ? 'var(--color-muted)' : '#fff',
-              border: count === 0 ? '1px solid var(--color-border)' : 'none',
-              cursor: mutation.isPending || count === 0 ? 'default' : 'pointer',
-              opacity: mutation.isPending ? 0.6 : 1,
-            }}
           >
             <Merge size={14} />
             {mutation.isPending ? 'Merging…' : `Merge all ${count} groups`}
-          </button>
+          </Button>
         </AlertDialogTrigger>
-        <AlertDialogContent style={{ background: 'var(--color-surface)' }}>
+        <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Merge all {count} unambiguous groups?</AlertDialogTitle>
             <AlertDialogDescription>

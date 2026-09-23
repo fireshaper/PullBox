@@ -14,7 +14,12 @@ from pullbox.clients.metadata import PROVIDER_ERRORS, ids_for
 from pullbox.deps import DbDep, MetadataProviderDep, SettingsDep
 from pullbox.models import Issue, Series, WeeklyRelease
 from pullbox.schemas import ReleaseIssueSummary, ReleaseSeriesSummary, WeeklyReleaseResponse
-from pullbox.services.dedupe import find_issue_for_release, find_series_for_release
+from pullbox.services.dedupe import (
+    adopt_provider_ids,
+    find_issue_for_release,
+    find_series_for_release,
+)
+from pullbox.services.queue import enqueue_issue, run_job_now
 
 # Bound concurrent volume lookups during publisher enrichment so a busy week
 # doesn't fan out dozens of simultaneous ComicVine requests.
@@ -32,6 +37,64 @@ def _log_task_exception(task: asyncio.Task) -> None:
     _background_tasks.discard(task)
     if not task.cancelled() and (exc := task.exception()):
         logger.error("Background refresh task failed", exc_info=exc)
+
+
+# Series currently being looked up, so two quick page loads of the same week
+# don't both pay for the same searches. Ids are removed when the task finishes.
+_resolving: set[int] = set()
+
+
+async def _resolve_links(settings, series_ids: list[int]) -> None:
+    """Search ComicVine for the ids of unlinked series on the week just served.
+
+    Metron's weekly feed carries no ``cv_id`` and most Metron series have none at
+    all, so without this the pull list stays unlinked until the background sweep
+    works its way round — which for the week the user is looking at right now is
+    the wrong time to wait. ``only_unattempted`` keeps this cheap: each series is
+    searched once ever from here, so browsing weeks costs nothing after the
+    first visit.
+    """
+    import pullbox.database as db_module  # noqa: PLC0415
+    import pullbox.deps as deps_module  # noqa: PLC0415
+    from pullbox.services.cv_link import resolve_series_cv_ids  # noqa: PLC0415
+
+    if not settings.comicvine_api_key or db_module.AsyncSessionLocal is None:
+        return
+
+    provider = deps_module.build_metadata_provider(settings)
+    try:
+        await resolve_series_cv_ids(
+            db_module.AsyncSessionLocal,
+            provider.comicvine_source,
+            series_ids=series_ids,
+            limit=len(series_ids),
+            only_unattempted=True,
+        )
+    finally:
+        await provider.close()
+        _resolving.difference_update(series_ids)
+
+
+def _dispatch_link_resolution(settings, releases) -> None:
+    """Kick off ComicVine-id recovery for the unlinked series in ``releases``.
+
+    Detached rather than awaited: a search per series would add seconds to the
+    page load, and the links are for the *next* render either way (the row is
+    already on screen by the time an id lands).
+    """
+    if not settings.comicvine_api_key:
+        return
+    unlinked = {
+        r.issue.series.id
+        for r in releases
+        if r.issue.series.comicvine_id is None and r.issue.series.id not in _resolving
+    }
+    if not unlinked:
+        return
+    _resolving.update(unlinked)
+    task = asyncio.create_task(_resolve_links(settings, sorted(unlinked)))
+    _background_tasks.add(task)
+    task.add_done_callback(_log_task_exception)
 
 
 def _current_week_str() -> str:
@@ -69,13 +132,27 @@ def _parse_date_str(value: object) -> date | None:
 # id spaces drifted apart in the first place.
 
 
-async def _refresh_week(db, provider, monday: date, sunday: date) -> None:
+async def _refresh_week(db, provider, monday: date, sunday: date) -> list[int]:
     """Fetch this week's releases from the provider and upsert into
     Series/Issue/WeeklyRelease.
 
     Uses the caller's DB session so all writes land in the same transaction.
     Never overwrites Issue.status on existing rows.
+
+    Returns the ids of DownloadJobs created for newly-discovered issues on
+    auto_download series; the caller must commit before acting on them.
+
+    Those job ids are created for newly-discovered issues on
+    auto_download series. This is the path that actually runs on every calendar
+    and pull-list page load; the equivalent enqueue in nightly_calendar_refresh
+    only fires from the manual Refresh button, so without this an auto_download
+    series would quietly accumulate 'unknown' issues that nothing ever queues.
+
+    ComicVine-id recovery is not driven from here — ``weekly_releases`` resolves
+    every unlinked series on the week it is about to return, which covers rows
+    this refresh created *and* rows an earlier one left unlinked.
     """
+    auto_job_ids: list[int] = []
     releases = await provider.get_weekly_releases(monday.isoformat(), sunday.isoformat())
 
     # Series that still lack a publisher after the upsert loop, keyed by local id so
@@ -121,6 +198,24 @@ async def _refresh_week(db, provider, monday: date, sunday: date) -> None:
             db.add(issue)
             await db.flush()
 
+            # Matches Series.auto_download's documented contract — "enqueue each
+            # newly-created row" — and the two other creation paths
+            # (series sync-issues, nightly_calendar_refresh). Scoped to issues
+            # created just now, so an existing back catalogue is never swept in.
+            if series.auto_download:
+                try:
+                    job, created = await enqueue_issue(issue.id, db)
+                    if created:
+                        auto_job_ids.append(job.id)
+                except ValueError:
+                    logger.warning(
+                        "_refresh_week: could not auto-enqueue new issue %d (%s #%s)",
+                        issue.id,
+                        series.title,
+                        issue.issue_number,
+                        exc_info=True,
+                    )
+
         source = "metron" if release_data.get("metron_id") else "comicvine"
         release_date = issue.store_date or monday
         result = await db.execute(
@@ -132,36 +227,53 @@ async def _refresh_week(db, provider, monday: date, sunday: date) -> None:
         if result.scalar_one_or_none() is None:
             db.add(WeeklyRelease(issue_id=issue.id, release_date=release_date, source=source))
 
-    await _enrich_publishers(provider, needs_publisher)
+    await _enrich_publishers(db, provider, needs_publisher)
 
     await db.flush()
 
+    if auto_job_ids:
+        logger.info(
+            "_refresh_week: auto-enqueued %d new issue(s) on auto_download series",
+            len(auto_job_ids),
+        )
+    return auto_job_ids
 
-async def _enrich_publishers(provider, series_by_id: dict[int, Series]) -> None:
+
+async def _enrich_publishers(db, provider, series_by_id: dict[int, Series]) -> None:
     """Fill in Series.publisher (and start_year) via per-series provider lookups.
 
     Runs at most ``_ENRICH_CONCURRENCY`` lookups in parallel. Failures — including
     rate-limit exhaustion — are swallowed per series so a missing publisher never
     aborts the refresh; those series simply group under "Unknown Publisher" and get
     retried on the next refresh (this fetch only targets series still missing one).
+
+    The detail record also carries the cross-source id the weekly feed lacks, so
+    it is adopted here too — that is what makes a Metron-only series linkable to
+    its ComicVine page. Only the HTTP fan-out is concurrent; the session is not
+    safe to share across tasks, so the writes are applied in a second, serial pass.
     """
     if not series_by_id:
         return
 
     semaphore = asyncio.Semaphore(_ENRICH_CONCURRENCY)
 
-    async def enrich(series: Series) -> None:
+    async def fetch(series: Series) -> dict | None:
         async with semaphore:
             try:
-                volume = await provider.get_volume(**ids_for(series))
+                return await provider.get_volume(**ids_for(series))
             except PROVIDER_ERRORS:
                 logger.debug("Publisher enrichment failed for series %s", series.id, exc_info=True)
-                return
+                return None
+
+    volumes = await asyncio.gather(*(fetch(s) for s in series_by_id.values()))
+
+    for series, volume in zip(series_by_id.values(), volumes, strict=True):
+        if volume is None:
+            continue
         series.publisher = volume.get("publisher")
         if series.start_year is None and volume.get("start_year") is not None:
             series.start_year = volume["start_year"]
-
-    await asyncio.gather(*(enrich(s) for s in series_by_id.values()))
+        await adopt_provider_ids(db, series, volume)
 
 
 @router.post("/refresh", status_code=202)
@@ -181,11 +293,17 @@ async def weekly_releases(
     provider: MetadataProviderDep,
     settings: SettingsDep,
     week: str | None = None,
+    cached: bool = False,
 ):
     """Fetch releases from the metadata provider for the given ISO week, upsert into
     DB, and return results.
 
     Falls back to cached DB data if no provider is configured or it is unreachable.
+
+    ``cached=true`` skips the provider entirely and returns only what the DB
+    already holds. The pull list page requests both at once: the cached read
+    renders in milliseconds while the live refresh (seconds of provider HTTP)
+    replaces it when it lands, so the page never blocks on the provider.
     """
     if week is None:
         week = _current_week_str()
@@ -195,14 +313,23 @@ async def weekly_releases(
     except (ValueError, IndexError):
         raise HTTPException(status_code=422, detail="Invalid week format — expected YYYY-WW")
 
-    if settings.metadata_configured:
+    if settings.metadata_configured and not cached:
         from pullbox.services import sync_status as sync_svc  # noqa: PLC0415
 
         try:
-            await _refresh_week(db, provider, monday, sunday)
+            auto_job_ids = await _refresh_week(db, provider, monday, sunday)
             await sync_svc.record_sync(
                 db, sync_svc.CALENDAR, success=True, message=f"Synced week {week}"
             )
+            if auto_job_ids:
+                # run_job_now opens its own session, so the rows must be committed
+                # before it looks for them — otherwise it finds nothing and the jobs
+                # wait for the next queue sweep. get_db's own commit later is a no-op.
+                await db.commit()
+                for job_id in auto_job_ids:
+                    task = asyncio.create_task(run_job_now(job_id))
+                    _background_tasks.add(task)
+                    task.add_done_callback(_log_task_exception)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "weekly_releases: provider fetch failed for %s, returning cached data",
@@ -228,6 +355,8 @@ async def weekly_releases(
         .order_by(Series.title.asc(), Issue.issue_number.asc())
     )
     releases = result.scalars().all()
+
+    _dispatch_link_resolution(settings, releases)
 
     return [
         WeeklyReleaseResponse(

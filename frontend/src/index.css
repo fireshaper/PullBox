@@ -1,6 +1,13 @@
 @import "tailwindcss";
 
+/* PullBox is dark-only. Tailwind v4 ties `dark:` to the OS colour scheme by
+   default, which made the vendored shadcn inputs look different depending on
+   the viewer's system setting — make it unconditional instead. */
+@custom-variant dark (&);
+
 @theme {
+  /* PullBox palette — also usable as utilities: bg-surface, text-muted,
+     border-border, text-status-failed, … */
   --color-bg: #0f0f11;
   --color-surface: #1a1a1f;
   --color-border: #2a2a30;
@@ -12,6 +19,30 @@
   --color-status-downloaded: #22c55e;
   --color-status-skipped: #6b7280;
   --color-status-failed: #ef4444;
+
+  /* shadcn/ui semantic tokens, mapped onto the palette above. Two names clash
+     and keep their PullBox meaning: `accent` is the brand red (shadcn: a subtle
+     hover background) and `muted` is grey *text* (shadcn: a background). The
+     vendored components in components/ui are edited to avoid bg-accent /
+     bg-muted — don't reintroduce them when adding a new shadcn component. */
+  --color-background: var(--color-bg);
+  --color-foreground: var(--color-text);
+  --color-card: var(--color-surface);
+  --color-card-foreground: var(--color-text);
+  --color-popover: var(--color-surface);
+  --color-popover-foreground: var(--color-text);
+  --color-primary: var(--color-accent);
+  --color-primary-foreground: #ffffff;
+  --color-secondary: var(--color-surface);
+  --color-secondary-foreground: var(--color-text);
+  --color-muted-foreground: var(--color-muted);
+  --color-accent-foreground: var(--color-text);
+  --color-destructive: var(--color-status-failed);
+  /* Form-field borders: a step lighter than --color-border so inputs and
+     checkboxes stay visible when they sit on a surface card. */
+  --color-input: #3f3f46;
+  /* Neutral, not brand red: a red focus ring reads as a validation error. */
+  --color-ring: #a1a1aa;
 }
 
 body {

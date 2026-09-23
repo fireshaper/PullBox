@@ -202,6 +202,35 @@ def test_weekly_releases_empty_for_unpopulated_week(client):
     assert resp.json() == []
 
 
+def test_weekly_releases_cached_skips_provider():
+    """?cached=true serves DB rows without calling the provider, even when configured.
+
+    The pull list renders this read immediately while the live refresh runs
+    alongside it, so it must never block on provider HTTP.
+    """
+    from pullbox.config import Settings
+    from pullbox.deps import get_settings
+
+    monday = _current_week_monday()
+    stub = _client_returning([])
+    app.dependency_overrides[get_settings] = lambda: Settings(comicvine_api_key="test-key")
+    try:
+        with TestClient(app) as c:
+            asyncio.run(_seed_release(monday))
+            cached = c.get("/api/releases/weekly?cached=true")
+            assert stub.get_weekly_releases.await_count == 0
+
+            live = c.get("/api/releases/weekly")
+            assert stub.get_weekly_releases.await_count == 1
+    finally:
+        app.dependency_overrides.pop(get_metadata_provider, None)
+        app.dependency_overrides.pop(get_settings, None)
+
+    assert cached.status_code == 200
+    assert [r["id"] for r in cached.json()] == [r["id"] for r in live.json()]
+    assert len(cached.json()) == 1
+
+
 def test_weekly_releases_invalid_week_returns_422(client):
     """Malformed week param returns HTTP 422."""
     resp = client.get("/api/releases/weekly?week=not-a-week")
@@ -459,3 +488,320 @@ def test_refresh_week_survives_volume_lookup_failure(client):
 
     # The release still landed; the series just has no publisher yet.
     assert asyncio.run(_series_publisher("vol-100")) == (None, None)
+
+
+def _metron_weekly_payload() -> list[dict]:
+    """A Metron weekly release: series carries metron_id only (list rows omit cv_id)."""
+    return [
+        {
+            "metron_id": "m-issue-1",
+            "issue_number": "1",
+            "title": "Issue X",
+            "store_date": "2025-05-07",
+            "cover_url": None,
+            "series": {"metron_id": "m-vol-1", "comicvine_id": None, "title": "Series X"},
+        }
+    ]
+
+
+async def _series_ids(metron_id: str) -> tuple[str | None, str | None]:
+    from sqlalchemy import select
+
+    import pullbox.database as db_module
+    from pullbox.models import Series
+
+    async with db_module.AsyncSessionLocal() as db:
+        s = (await db.execute(select(Series).where(Series.metron_id == metron_id))).scalar_one()
+        return s.metron_id, s.comicvine_id
+
+
+def test_refresh_week_adopts_comicvine_id_from_volume_detail(client):
+    """A Metron-only series picks up cv_id from the detail lookup that fills publisher."""
+    from datetime import date
+
+    import pullbox.database as db_module
+    from pullbox.routers.releases import _refresh_week
+
+    fake = AsyncMock()
+    fake.get_weekly_releases.return_value = _metron_weekly_payload()
+    fake.get_volume.return_value = {
+        "metron_id": "m-vol-1",
+        "comicvine_id": "cv-999",
+        "publisher": "Boom! Studios",
+        "start_year": 2024,
+    }
+
+    async def _run():
+        async with db_module.AsyncSessionLocal() as db:
+            await _refresh_week(db, fake, date(2025, 5, 5), date(2025, 5, 11))
+            await db.commit()
+
+    asyncio.run(_run())
+
+    assert asyncio.run(_series_ids("m-vol-1")) == ("m-vol-1", "cv-999")
+
+
+def test_refresh_week_does_not_steal_comicvine_id_held_by_another_series(client):
+    """If another row already owns that cv_id, leave it — that is a merge for Settings."""
+    from datetime import date
+
+    import pullbox.database as db_module
+    from pullbox.models import Series
+    from pullbox.routers.releases import _refresh_week
+
+    async def _seed():
+        async with db_module.AsyncSessionLocal() as db:
+            # Deliberately a different title so the norm_title bridge does not
+            # match it and the weekly row is created as a separate series.
+            db.add(Series(comicvine_id="cv-999", title="Series X (2019)", publisher="Boom"))
+            await db.commit()
+
+    asyncio.run(_seed())
+
+    fake = AsyncMock()
+    fake.get_weekly_releases.return_value = _metron_weekly_payload()
+    fake.get_volume.return_value = {
+        "metron_id": "m-vol-1",
+        "comicvine_id": "cv-999",
+        "publisher": "Boom! Studios",
+        "start_year": 2024,
+    }
+
+    async def _run():
+        async with db_module.AsyncSessionLocal() as db:
+            await _refresh_week(db, fake, date(2025, 5, 5), date(2025, 5, 11))
+            await db.commit()
+
+    asyncio.run(_run())  # must not raise a UNIQUE violation
+
+    assert asyncio.run(_series_ids("m-vol-1")) == ("m-vol-1", None)
+
+
+async def _seed_unlinked_release(release_date: date, title: str) -> int:
+    """A Metron-sourced release: series has metron_id but no comicvine_id."""
+    import pullbox.database as db_module
+    from pullbox.models import Issue, Series, WeeklyRelease
+
+    async with db_module.AsyncSessionLocal() as db:
+        series = Series(metron_id=f"m-{title}", title=title, publisher="Boom!")
+        db.add(series)
+        await db.flush()
+        issue = Issue(
+            series_id=series.id, metron_id=f"mi-{title}", issue_number="1", status="unknown"
+        )
+        db.add(issue)
+        await db.flush()
+        db.add(WeeklyRelease(issue_id=issue.id, release_date=release_date, source="metron"))
+        await db.commit()
+        return series.id
+
+
+def _dispatched_for(client, week: str) -> list[list[int]]:
+    """Run the endpoint with _resolve_links stubbed, returning its call args."""
+    from pullbox.routers import releases as releases_module
+
+    calls: list[list[int]] = []
+
+    async def _fake_resolve(settings, series_ids):
+        calls.append(sorted(series_ids))
+
+    releases_module._resolving.clear()
+    with patch.object(releases_module, "_resolve_links", _fake_resolve):
+        resp = client.get(f"/api/releases/weekly?week={week}")
+    assert resp.status_code == 200
+    return calls
+
+
+def test_weekly_releases_dispatches_link_resolution_for_unlinked_series(client, monkeypatch):
+    """The pull list resolves every unlinked series on the week it serves.
+
+    Not just the ones this refresh created: a series added by an earlier refresh
+    is still unlinked, and waiting for the background sweep to come round means
+    the week the user is looking at right now has no links on it.
+    """
+    import pullbox.deps as deps_module
+    from pullbox.routers import releases as releases_module
+
+    monday = date(2025, 5, 5)
+    unlinked_id = asyncio.run(_seed_unlinked_release(monday, "Unlinked Book"))
+    asyncio.run(_seed_release(monday, series_title="Linked Book"))
+
+    settings = deps_module.get_settings()
+    monkeypatch.setattr(settings, "comicvine_api_key", "test-key", raising=False)
+
+    calls = _dispatched_for(client, "2025-19")
+    releases_module._resolving.clear()
+
+    assert calls == [[unlinked_id]], "only the unlinked series should be looked up"
+
+
+def test_weekly_releases_does_not_redispatch_while_in_flight(client, monkeypatch):
+    """Two quick loads of the same week must not pay for the same searches twice."""
+    import pullbox.deps as deps_module
+    from pullbox.routers import releases as releases_module
+
+    monday = date(2025, 5, 12)
+    asyncio.run(_seed_unlinked_release(monday, "Inflight Book"))
+
+    settings = deps_module.get_settings()
+    monkeypatch.setattr(settings, "comicvine_api_key", "test-key", raising=False)
+
+    calls: list[list[int]] = []
+
+    async def _fake_resolve(settings, series_ids):
+        calls.append(sorted(series_ids))  # never clears _resolving — simulates in-flight
+
+    releases_module._resolving.clear()
+    with patch.object(releases_module, "_resolve_links", _fake_resolve):
+        client.get("/api/releases/weekly?week=2025-20")
+        client.get("/api/releases/weekly?week=2025-20")
+    releases_module._resolving.clear()
+
+    assert len(calls) == 1
+
+
+# ── auto_download on the page-load refresh path ──────────────────────────────
+
+
+def _auto_release(monday):
+    return [
+        {
+            "comicvine_id": "issue-auto-1",
+            "issue_number": "1",
+            "title": "Auto Issue",
+            "store_date": monday.isoformat(),
+            "cover_url": None,
+            "series": {"comicvine_id": "series-auto", "title": "Auto Series"},
+        }
+    ]
+
+
+def _client_returning(releases):
+    stub = AsyncMock()
+    stub.get_weekly_releases.return_value = releases
+    # get_volume must return a real dict: _enrich_publishers runs for every new
+    # series and a bare AsyncMock's .get() hands back a coroutine, which SQLAlchemy
+    # then tries to bind as a column value.
+    stub.get_volume.return_value = {"publisher": "Test Publisher", "start_year": 2025}
+
+    async def _override():
+        yield stub
+
+    app.dependency_overrides[get_metadata_provider] = _override
+    return stub
+
+
+def _jobs_for_series(title):
+    """Return (issue_status, job_statuses) for the single issue of `title`."""
+    from sqlalchemy import select
+
+    from pullbox.database import AsyncSessionLocal
+    from pullbox.models import DownloadJob, Issue, Series
+
+    async def _run():
+        async with AsyncSessionLocal() as db:
+            series = (await db.execute(select(Series).where(Series.title == title))).scalar_one()
+            issue = (
+                await db.execute(select(Issue).where(Issue.series_id == series.id))
+            ).scalar_one()
+            jobs = (
+                (await db.execute(select(DownloadJob).where(DownloadJob.issue_id == issue.id)))
+                .scalars()
+                .all()
+            )
+            return issue.status, [j.status for j in jobs]
+
+    return asyncio.run(_run())
+
+
+def _set_auto_download(title):
+    from sqlalchemy import select
+
+    from pullbox.database import AsyncSessionLocal
+    from pullbox.models import Series
+
+    async def _run():
+        async with AsyncSessionLocal() as db:
+            series = (await db.execute(select(Series).where(Series.title == title))).scalar_one()
+            series.auto_download = True
+            series.subscribed = True
+            await db.commit()
+
+    asyncio.run(_run())
+
+
+def test_weekly_refresh_does_not_enqueue_without_auto_download():
+    """A new issue on an ordinary series stays 'unknown' with no job — unchanged."""
+    monday = _current_week_monday()
+    _client_returning(_auto_release(monday))
+    try:
+        with TestClient(app) as c:
+            c.get("/api/releases/weekly")
+    finally:
+        app.dependency_overrides.pop(get_metadata_provider, None)
+
+    status, jobs = _jobs_for_series("Auto Series")
+    assert status == "unknown"
+    assert jobs == []
+
+
+def test_weekly_refresh_enqueues_new_issue_on_auto_download_series(monkeypatch):
+    """The page-load refresh queues newly-discovered issues on auto_download series.
+
+    Regression test for the real gap: this enqueue existed only in
+    nightly_calendar_refresh, which runs solely from the manual Refresh button, so
+    auto_download series silently accumulated 'unknown' issues that nothing queued.
+    """
+    # Don't let the queued job actually run a search against real indexers.
+    monkeypatch.setattr("pullbox.routers.releases.run_job_now", AsyncMock())
+
+    monday = _current_week_monday()
+    releases = _auto_release(monday)
+
+    # First load creates the series (auto_download defaults off), so flip it on and
+    # bring in a second issue the way a new release would arrive.
+    _client_returning(releases)
+    try:
+        with TestClient(app) as c:
+            c.get("/api/releases/weekly")
+            _set_auto_download("Auto Series")
+            releases.append(
+                {
+                    "comicvine_id": "issue-auto-2",
+                    "issue_number": "2",
+                    "title": "Auto Issue Two",
+                    "store_date": monday.isoformat(),
+                    "cover_url": None,
+                    "series": {"comicvine_id": "series-auto", "title": "Auto Series"},
+                }
+            )
+            c.get("/api/releases/weekly")
+    finally:
+        app.dependency_overrides.pop(get_metadata_provider, None)
+
+    from sqlalchemy import select
+
+    from pullbox.database import AsyncSessionLocal
+    from pullbox.models import DownloadJob, Issue, Series
+
+    async def _run():
+        async with AsyncSessionLocal() as db:
+            series = (
+                await db.execute(select(Series).where(Series.title == "Auto Series"))
+            ).scalar_one()
+            issues = (
+                (await db.execute(select(Issue).where(Issue.series_id == series.id)))
+                .scalars()
+                .all()
+            )
+            by_num = {i.issue_number: i for i in issues}
+            jobs = (await db.execute(select(DownloadJob))).scalars().all()
+            return by_num, {j.issue_id for j in jobs}
+
+    by_num, job_issue_ids = asyncio.run(_run())
+
+    # #2 arrived while auto_download was on → queued and promoted out of 'unknown'.
+    assert by_num["2"].id in job_issue_ids
+    assert by_num["2"].status == "wanted"
+    # #1 predates the flag; the contract is "each newly-created row", not a backfill.
+    assert by_num["1"].id not in job_issue_ids

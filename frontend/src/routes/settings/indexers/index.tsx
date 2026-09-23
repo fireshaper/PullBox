@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { CheckCircle, XCircle } from 'lucide-react'
 import { del, get, patch, post } from '../../../api/client'
+import { Button } from '../../../components/ui/button'
 import {
   Dialog,
   DialogContent,
@@ -97,23 +98,14 @@ function TestButton({ indexerId }: { indexerId: number }) {
   })
 
   return (
-    <button
+    <Button
+      variant="subtle"
+      size="xs"
       onClick={() => mutate()}
       disabled={isPending}
-      style={{
-        fontSize: '0.72rem',
-        padding: '3px 8px',
-        borderRadius: '4px',
-        background: 'transparent',
-        color: 'var(--color-muted)',
-        border: '1px solid var(--color-border)',
-        cursor: isPending ? 'wait' : 'pointer',
-        opacity: isPending ? 0.7 : 1,
-        whiteSpace: 'nowrap',
-      }}
     >
       {isPending ? 'Testing…' : 'Test'}
-    </button>
+    </Button>
   )
 }
 
@@ -127,36 +119,20 @@ function DeleteButton({ indexerId }: { indexerId: number }) {
   return (
     <AlertDialog>
       <AlertDialogTrigger asChild>
-        <button
-          style={{
-            fontSize: '0.72rem',
-            padding: '3px 8px',
-            borderRadius: '4px',
-            background: 'transparent',
-            color: 'var(--color-status-failed)',
-            border: '1px solid color-mix(in srgb, var(--color-status-failed) 40%, transparent)',
-            cursor: 'pointer',
-            whiteSpace: 'nowrap',
-          }}
-        >
+        <Button variant="danger" size="xs">
           Delete
-        </button>
+        </Button>
       </AlertDialogTrigger>
-      <AlertDialogContent
-        style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border)' }}
-      >
+      <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle style={{ color: 'var(--color-text)' }}>Delete indexer?</AlertDialogTitle>
-          <AlertDialogDescription style={{ color: 'var(--color-muted)' }}>
+          <AlertDialogTitle>Delete indexer?</AlertDialogTitle>
+          <AlertDialogDescription>
             This will permanently remove this indexer. Existing download jobs will not be affected.
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <AlertDialogAction
-            onClick={() => mutate()}
-            style={{ background: 'var(--color-status-failed)', color: '#fff', border: 'none' }}
-          >
+          <AlertDialogAction variant="destructive" onClick={() => mutate()}>
             Delete
           </AlertDialogAction>
         </AlertDialogFooter>
@@ -233,11 +209,9 @@ function IndexerFormDialog({
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogTrigger asChild>{trigger}</DialogTrigger>
 
-      <DialogContent
-        style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border)' }}
-      >
+      <DialogContent>
         <DialogHeader>
-          <DialogTitle style={{ color: 'var(--color-text)' }}>
+          <DialogTitle>
             {isEdit ? 'Edit Indexer' : 'Add Indexer'}
           </DialogTitle>
         </DialogHeader>
@@ -405,42 +379,24 @@ function IndexerFormDialog({
 
         <DialogFooter style={{ justifyContent: 'space-between' }}>
           {TESTABLE_TYPES.includes(form.type) ? (
-            <button
+            <Button
+              variant="outline"
+              size="lg"
               onClick={() => test.mutate()}
               disabled={!canTest}
-              style={{
-                fontSize: '0.875rem',
-                padding: '6px 16px',
-                borderRadius: '6px',
-                background: 'transparent',
-                color: 'var(--color-text)',
-                border: '1px solid var(--color-border)',
-                cursor: canTest ? 'pointer' : 'not-allowed',
-                opacity: canTest ? 1 : 0.6,
-                fontWeight: 500,
-              }}
             >
               {test.isPending ? 'Testing…' : 'Test Connection'}
-            </button>
+            </Button>
           ) : (
             <span />
           )}
-          <button
+          <Button
+            size="lg"
             onClick={() => mutate()}
             disabled={!canSubmit}
-            style={{
-              fontSize: '0.875rem',
-              padding: '6px 16px',
-              borderRadius: '6px',
-              background: canSubmit ? 'var(--color-accent)' : 'var(--color-border)',
-              color: '#fff',
-              border: 'none',
-              cursor: canSubmit ? 'pointer' : 'not-allowed',
-              fontWeight: 500,
-            }}
           >
             {isPending ? (isEdit ? 'Saving…' : 'Adding…') : isEdit ? 'Save Changes' : 'Add Indexer'}
-          </button>
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -453,20 +409,9 @@ function EditButton({ indexer, onSaved }: { indexer: Indexer; onSaved: () => voi
       indexer={indexer}
       onSaved={onSaved}
       trigger={
-        <button
-          style={{
-            fontSize: '0.72rem',
-            padding: '3px 8px',
-            borderRadius: '4px',
-            background: 'transparent',
-            color: 'var(--color-muted)',
-            border: '1px solid var(--color-border)',
-            cursor: 'pointer',
-            whiteSpace: 'nowrap',
-          }}
-        >
+        <Button variant="subtle" size="xs">
           Edit
-        </button>
+        </Button>
       }
     />
   )
@@ -615,20 +560,9 @@ function IndexersPage() {
         <IndexerFormDialog
           onSaved={() => queryClient.invalidateQueries({ queryKey: ['indexers'] })}
           trigger={
-            <button
-              style={{
-                fontSize: '0.875rem',
-                padding: '6px 16px',
-                borderRadius: '6px',
-                background: 'var(--color-accent)',
-                color: '#fff',
-                border: 'none',
-                cursor: 'pointer',
-                fontWeight: 500,
-              }}
-            >
+            <Button size="lg">
               Add Indexer
-            </button>
+            </Button>
           }
         />
       </div>

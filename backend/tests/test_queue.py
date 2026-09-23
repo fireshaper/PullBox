@@ -645,11 +645,11 @@ def _seed_issue_with_jobs(client, *, issue_status, job_specs):
 
 def _reconcile():
     from pullbox.database import AsyncSessionLocal
-    from pullbox.services.queue import enqueue_orphaned_wanted
+    from pullbox.services.queue import enqueue_unqueued_issues
 
     async def _run():
         async with AsyncSessionLocal() as db:
-            created = await enqueue_orphaned_wanted(db)
+            created = await enqueue_unqueued_issues(db)
             await db.commit()
             return created
 
@@ -725,3 +725,181 @@ def test_reconcile_is_idempotent(client):
 
     assert len(_reconcile()) == 1
     assert _reconcile() == []
+
+
+def _seed_auto_download_issue(client, *, issue_status, auto_download, job_specs=()):
+    """Create a series with the given auto_download flag plus one issue. Returns issue id."""
+    from pullbox.database import AsyncSessionLocal
+    from pullbox.models import DownloadJob, Issue, Series
+
+    async def _run():
+        async with AsyncSessionLocal() as db:
+            series = Series(
+                title="Auto DL Series", comicvine_id="99002", auto_download=auto_download
+            )
+            db.add(series)
+            await db.flush()
+            issue = Issue(series_id=series.id, issue_number="1", status=issue_status)
+            db.add(issue)
+            await db.flush()
+            for status, next_attempt_at in job_specs:
+                db.add(
+                    DownloadJob(
+                        issue_id=issue.id,
+                        source_type="usenet",
+                        status=status,
+                        attempts=1,
+                        next_attempt_at=next_attempt_at,
+                    )
+                )
+            await db.commit()
+            return issue.id
+
+    return asyncio.run(_run())
+
+
+def test_reconcile_enqueues_unknown_issue_on_auto_download_series(client):
+    """'unknown' issues on an auto_download series are queued and promoted to wanted.
+
+    auto_download only ever fires at issue-creation time, so an issue created before
+    the flag was set — or by a path that skipped the enqueue — is stranded as
+    'unknown' with no job and renders as "Not queued" forever.
+    """
+    issue_id = _seed_auto_download_issue(client, issue_status="unknown", auto_download=True)
+
+    created = _reconcile()
+    assert len(created) == 1
+
+    from pullbox.database import AsyncSessionLocal
+    from pullbox.models import Issue
+
+    async def _check():
+        async with AsyncSessionLocal() as db:
+            return (await db.get(Issue, issue_id)).status
+
+    assert asyncio.run(_check()) == "wanted"
+
+
+def test_reconcile_ignores_unknown_issue_without_auto_download(client):
+    """'unknown' on an ordinary series is left alone — that is the normal resting state."""
+    _seed_auto_download_issue(client, issue_status="unknown", auto_download=False)
+
+    assert _reconcile() == []
+
+
+def test_reconcile_skips_auto_download_issue_with_failed_job(client):
+    """The retry cap still applies on auto_download series."""
+    _seed_auto_download_issue(
+        client, issue_status="unknown", auto_download=True, job_specs=[("failed", None)]
+    )
+
+    assert _reconcile() == []
+
+
+# ── The search must not hold SQLite's write lock ─────────────────────────────
+
+
+def test_process_job_releases_write_lock_during_search(client, monkeypatch):
+    """A concurrent write must succeed while process_job is searching.
+
+    SQLite allows one writer, and a flush holds that lock until the transaction
+    ends. The original "flush then search" shape kept it across every indexer HTTP
+    call, so a sweep of a dozen jobs held it far past busy_timeout (5s) — and the
+    APScheduler datastore, which shares this database, took "database is locked" on
+    its own bookkeeping write and crashed the entire scheduler, silently stopping
+    download polling and queue retries.
+    """
+    from sqlalchemy import text
+
+    import pullbox.services.queue as queue_mod
+    from pullbox.database import AsyncSessionLocal
+    from pullbox.deps import get_settings
+    from pullbox.models import DownloadJob, Issue, Series
+
+    # A search slower than busy_timeout, so a held lock is guaranteed to fail.
+    async def slow_search(issue, series, indexers):
+        await asyncio.sleep(7)
+        return []
+
+    monkeypatch.setattr(queue_mod, "fan_out_search", slow_search)
+
+    async def _seed():
+        async with AsyncSessionLocal() as db:
+            series = Series(title="Lock Test", comicvine_id="99003")
+            db.add(series)
+            await db.flush()
+            issue = Issue(series_id=series.id, issue_number="1", status="wanted")
+            db.add(issue)
+            await db.flush()
+            job = DownloadJob(
+                issue_id=issue.id, source_type="usenet", status="queued", attempts=0
+            )
+            db.add(job)
+            await db.commit()
+            return job.id, issue.id
+
+    async def _competing_write(issue_id):
+        await asyncio.sleep(2)  # land mid-search
+        async with AsyncSessionLocal() as db:
+            await db.execute(
+                text("UPDATE issues SET title=:t WHERE id=:i"),
+                {"t": "written during search", "i": issue_id},
+            )
+            await db.commit()
+        return True
+
+    async def _run():
+        job_id, issue_id = await _seed()
+        async with AsyncSessionLocal() as db:
+            wrote, _ = await asyncio.gather(
+                _competing_write(issue_id),
+                queue_mod.process_job(job_id, db, get_settings()),
+            )
+        return wrote
+
+    # Raises OperationalError("database is locked") if the lock is held.
+    assert asyncio.run(_run()) is True
+
+
+def test_process_job_failing_search_does_not_strand_job_as_searching(client, monkeypatch):
+    """A search that raises leaves the job retryable, not stuck in 'searching'.
+
+    process_job commits its 'searching' claim before the network call, so an
+    exception can no longer be rolled back by the caller — and 'searching' is a
+    status neither the queue sweep nor the reconciler ever revisits.
+    """
+    import pullbox.services.queue as queue_mod
+    from pullbox.database import AsyncSessionLocal
+    from pullbox.deps import get_settings
+    from pullbox.models import DownloadJob, Issue, Series
+
+    async def boom(issue, series, indexers):
+        raise RuntimeError("indexer exploded")
+
+    monkeypatch.setattr(queue_mod, "fan_out_search", boom)
+
+    async def _run():
+        async with AsyncSessionLocal() as db:
+            series = Series(title="Boom Test", comicvine_id="99004")
+            db.add(series)
+            await db.flush()
+            issue = Issue(series_id=series.id, issue_number="1", status="wanted")
+            db.add(issue)
+            await db.flush()
+            job = DownloadJob(
+                issue_id=issue.id, source_type="usenet", status="queued", attempts=0
+            )
+            db.add(job)
+            await db.commit()
+            job_id = job.id
+
+        async with AsyncSessionLocal() as db:
+            await queue_mod.process_job(job_id, db, get_settings())
+
+        async with AsyncSessionLocal() as db:
+            refreshed = await db.get(DownloadJob, job_id)
+            return refreshed.status, refreshed.next_attempt_at
+
+    status, next_attempt_at = asyncio.run(_run())
+    assert status == "failed"
+    assert next_attempt_at is not None  # scheduled for retry, not given up on

@@ -2,6 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { get, patch, post } from '../../../api/client'
+import { Button } from '../../../components/ui/button'
 import { Input } from '../../../components/ui/input'
 import {
   Select,
@@ -355,22 +356,13 @@ function PostProcessingPage() {
 
           {/* Save */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <button
+            <Button
+              size="lg"
               onClick={() => mutate(form)}
               disabled={!dirty || isPending}
-              style={{
-                fontSize: '0.875rem',
-                padding: '6px 16px',
-                borderRadius: '6px',
-                background: dirty && !isPending ? 'var(--color-accent)' : 'var(--color-border)',
-                color: '#fff',
-                border: 'none',
-                cursor: dirty && !isPending ? 'pointer' : 'not-allowed',
-                fontWeight: 500,
-              }}
             >
               {isPending ? 'Saving…' : 'Save'}
-            </button>
+            </Button>
             {isSuccess && !dirty && (
               <span style={{ fontSize: '0.8rem', color: 'var(--color-status-downloaded)' }}>
                 Saved

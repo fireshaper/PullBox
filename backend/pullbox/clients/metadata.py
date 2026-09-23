@@ -172,6 +172,16 @@ class CompositeProvider(MetadataProvider):
 
     # -- ordering helpers ----------------------------------------------------
 
+    @property
+    def comicvine_source(self) -> Any | None:
+        """The ComicVine source, or None when no API key is configured.
+
+        Exposed because a couple of callers need ComicVine *specifically* rather
+        than "whichever source answers first" — recovering a ComicVine volume id
+        for a Metron series is meaningless if Metron serves the search.
+        """
+        return self._comicvine
+
     def _ordered_sources(self) -> list[Any]:
         """Primary source first, then the other — skipping any that aren't configured."""
         order = (

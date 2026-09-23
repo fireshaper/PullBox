@@ -14,6 +14,8 @@ from pullbox.clients.sabnzbd import SABnzbdClient
 from pullbox.config import Settings
 from pullbox.models import DownloadClient, DownloadJob, Indexer, Issue, Series
 from pullbox.search import fan_out_search, score_results
+from pullbox.services import webhooks
+from pullbox.services.general import resolve_library_path
 
 logger = logging.getLogger(__name__)
 
@@ -65,17 +67,27 @@ async def enqueue_issue(issue_id: int, db: AsyncSession) -> tuple[DownloadJob, b
     return job, True
 
 
-async def enqueue_orphaned_wanted(db: AsyncSession) -> list[int]:
-    """Create jobs for 'wanted' issues that have no job working on their behalf.
+async def enqueue_unqueued_issues(db: AsyncSession) -> list[int]:
+    """Create jobs for issues that should be downloading but have nothing working on them.
 
-    Marking an issue wanted and enqueuing it are separate steps, and several paths
-    set 'wanted' without ever enqueuing: arc sync creates new issues that way, and a
-    library rescan flips an issue back to wanted when its file goes missing. Nothing
-    else reconciles those — the sweep only walks existing DownloadJob rows — so they
-    sit wanted forever. This closes that gap.
+    Two populations qualify:
 
-    An issue is only re-enqueued when every job it has is 'completed' (or it has
-    none). Any 'failed' job means the queue is still deliberately handling it: with a
+    * ``wanted`` issues with no job. Marking an issue wanted and enqueuing it are
+      separate steps, and several paths set 'wanted' without ever enqueuing: arc
+      sync creates new issues that way, and a library rescan flips an issue back to
+      wanted when its file goes missing.
+    * ``unknown`` issues on an ``auto_download`` series. Series.auto_download means
+      "enqueue each newly-created row", but that only ever fires at creation time —
+      an issue created before the flag was set, or during a window where the
+      creating path forgot to enqueue, is otherwise stranded forever.
+
+    Nothing else reconciles either group: the queue sweep only walks existing
+    DownloadJob rows, so an issue with no job is invisible to it. ``enqueue_issue``
+    promotes 'unknown' to 'wanted', so a queued issue also stops rendering as
+    "Not queued" in the calendar.
+
+    An issue is only enqueued when every job it has is 'completed' (or it has none).
+    Any 'failed' job means the queue is still deliberately handling it: with a
     next_attempt_at it is mid-backoff, and with a NULL one it exhausted max_retries
     and is meant to stay stopped. Enqueuing in either case would duplicate the job or
     silently defeat the retry cap.
@@ -83,27 +95,41 @@ async def enqueue_orphaned_wanted(db: AsyncSession) -> list[int]:
     Returns the ids of newly created jobs.
     """
     blocking = ACTIVE_STATUSES | {"failed"}
-    rows = (
+    has_live_job = (
+        select(DownloadJob.id)
+        .where(
+            DownloadJob.issue_id == Issue.id,
+            DownloadJob.status.in_(blocking),
+        )
+        .exists()
+    )
+
+    wanted_rows = (
+        await db.execute(select(Issue.id).where(Issue.status == "wanted", ~has_live_job))
+    ).scalars().all()
+
+    auto_rows = (
         await db.execute(
-            select(Issue.id).where(
-                Issue.status == "wanted",
-                ~select(DownloadJob.id)
-                .where(
-                    DownloadJob.issue_id == Issue.id,
-                    DownloadJob.status.in_(blocking),
-                )
-                .exists(),
+            select(Issue.id)
+            .join(Series, Series.id == Issue.series_id)
+            .where(
+                Issue.status == "unknown",
+                Series.auto_download == True,  # noqa: E712
+                ~has_live_job,
             )
         )
     ).scalars().all()
 
+    # dict.fromkeys keeps insertion order while dropping any overlap between the two.
+    issue_ids = list(dict.fromkeys([*wanted_rows, *auto_rows]))
+
     created_ids: list[int] = []
-    for issue_id in rows:
+    for issue_id in issue_ids:
         try:
             job, created = await enqueue_issue(issue_id, db)
         except ValueError:
             logger.warning(
-                "enqueue_orphaned_wanted: could not enqueue issue %d", issue_id, exc_info=True
+                "enqueue_unqueued_issues: could not enqueue issue %d", issue_id, exc_info=True
             )
             continue
         if created:
@@ -112,8 +138,11 @@ async def enqueue_orphaned_wanted(db: AsyncSession) -> list[int]:
     if created_ids:
         await db.flush()
         logger.info(
-            "enqueue_orphaned_wanted: enqueued %d wanted issue(s) that had no active job",
+            "enqueue_unqueued_issues: enqueued %d issue(s) with no active job "
+            "(%d wanted, %d unknown on auto_download series)",
             len(created_ids),
+            len(wanted_rows),
+            len(auto_rows),
         )
     return created_ids
 
@@ -124,6 +153,14 @@ async def process_job(job_id: int, db: AsyncSession, settings: Settings) -> None
     Searches all enabled indexers. On success, sets status to 'pending' with
     top-scored result. On failure, sets exponential backoff next_attempt_at.
     Permanently fails after settings.max_retries attempts.
+
+    Commits at each step rather than leaving one transaction open for the whole
+    cycle. SQLite allows a single writer, and a flush takes that write lock until
+    the transaction ends — so the previous "flush then search" shape held the lock
+    across every indexer HTTP call. A sweep of a dozen jobs kept it for far longer
+    than busy_timeout (5s), and the APScheduler datastore, which shares this
+    database, got "database is locked" on its own bookkeeping write and crashed the
+    whole scheduler. Every network call here must happen with no write pending.
     """
     job = await db.get(DownloadJob, job_id)
     if job is None:
@@ -140,82 +177,137 @@ async def process_job(job_id: int, db: AsyncSession, settings: Settings) -> None
         logger.warning("process_job: series not found for issue %d", issue.id)
         return
 
-    job.status = "searching"
-    job.attempts += 1
-    await db.flush()
-
-    indexer_result = await db.execute(select(Indexer).where(Indexer.enabled == True))  # noqa: E712
-    indexers = list(indexer_result.scalars().all())
-
-    results = await fan_out_search(issue, series, indexers)
-
-    now = datetime.now(tz=timezone.utc)
-    job.last_attempt_at = now
-
-    if not results:
-        job.status = "failed"
-        if job.attempts >= settings.max_retries:
-            job.next_attempt_at = None
-        else:
-            days = min(2 ** (job.attempts - 1), 7)
-            job.next_attempt_at = now + timedelta(days=days)
-    else:
-        scored = score_results(results, series.title, issue.issue_number)
-        top = scored[0]
-        job.status = "pending"
-        job.result_guid = top.guid
-        job.result_title = top.title
-        job.indexer_id = top.indexer_id
-        job.source_type = top.source_type
-
-        dc_result = await db.execute(
+    # Read everything the network steps need up front, while this is still a
+    # read-only transaction holding no write lock.
+    indexers = list(
+        (await db.execute(select(Indexer).where(Indexer.enabled == True))).scalars().all()  # noqa: E712
+    )
+    dc = (
+        await db.execute(
             select(DownloadClient)
             .where(DownloadClient.enabled == True)  # noqa: E712
             .order_by(DownloadClient.id)
             .limit(1)
         )
-        dc = dc_result.scalar_one_or_none()
+    ).scalar_one_or_none()
+    # Snapshot the client's fields: they are read again after a commit, and
+    # detaching them here keeps that independent of session expiry settings.
+    dc_type = dc.type if dc else None
+    dc_category = dc.category if dc else None
+    dl_client = _build_download_client(dc, job_id) if dc else None
 
-        if dc:
-            if dc.type == "nzbget":
-                dl_client = NZBGetClient(
-                    host=dc.host,
-                    port=dc.port,
-                    username=dc.username or "nzbget",
-                    password=dc.password or "",
-                )
-            elif dc.type == "sabnzbd":
-                dl_client = SABnzbdClient(
-                    host=dc.host,
-                    port=dc.port,
-                    api_key=dc.api_key or "",
-                )
-            else:
-                logger.warning(
-                    "process_job: unsupported download client type %r; job %d left at 'pending'",
-                    dc.type,
-                    job_id,
-                )
-                dl_client = None
+    series_title = series.title
+    issue_number = issue.issue_number
+    # For the webhook payload's path_rel; read here while still read-only.
+    library_root = await resolve_library_path(db, settings.library_path)
 
-            if dl_client is not None:
-                try:
-                    sanitized = _sanitize_name(series.title, issue.issue_number)
-                    client_job_id = await dl_client.send_nzb(top.download_url, sanitized, dc.category)
-                    job.client_job_id = client_job_id
-                    job.download_client_type = dc.type
-                    job.status = "downloading"
-                    issue.status = "downloading"
-                except Exception:
-                    logger.warning(
-                        "process_job: %s dispatch failed for job %d", dc.type, job_id, exc_info=True
-                    )
+    # Claim the job in its own short transaction, then release the write lock.
+    job.status = "searching"
+    job.attempts += 1
+    await db.commit()
+
+    async def _fail(reason: str) -> None:
+        """Record a failed attempt with backoff; give up at max_retries.
+
+        Commits, then (only when the cap was hit) notifies — a routine
+        no-results miss is not worth a webhook, since most issues simply have
+        not reached the indexers yet.
+        """
+        now = datetime.now(tz=timezone.utc)
+        job.last_attempt_at = now
+        job.status = "failed"
+        exhausted = job.attempts >= settings.max_retries
+        if exhausted:
+            job.next_attempt_at = None
         else:
+            days = min(2 ** (job.attempts - 1), 7)
+            job.next_attempt_at = now + timedelta(days=days)
+        payload = (
+            webhooks.build_issue_payload(
+                issue,
+                series,
+                library_root,
+                job=job,
+                reason=f"{reason} (attempt {job.attempts} of {settings.max_retries})",
+            )
+            if exhausted
+            else None
+        )
+        await db.commit()
+        if payload is not None:
+            webhooks.emit("download.exhausted", payload)
+
+    try:
+        results = await fan_out_search(issue, series, indexers)
+    except Exception:
+        # The claim above is already committed, so letting this propagate would
+        # strand the job in 'searching' — a status neither the sweep nor the
+        # reconciler ever revisits. Fail it so the normal backoff retries it.
+        logger.warning("process_job: search failed for job %d", job_id, exc_info=True)
+        await _fail("Indexer search failed")
+        return
+
+    now = datetime.now(tz=timezone.utc)
+
+    if not results:
+        await _fail("No results found on any indexer")
+        return
+
+    job.last_attempt_at = now
+    scored = score_results(results, series_title, issue_number)
+    top = scored[0]
+    job.status = "pending"
+    job.result_guid = top.guid
+    job.result_title = top.title
+    job.indexer_id = top.indexer_id
+    job.source_type = top.source_type
+
+    if dl_client is None:
+        if dc is None:
             logger.warning(
                 "process_job: no download client configured; job %d left at 'pending'", job_id
             )
+        await db.commit()
+        return
 
-    await db.flush()
+    # Persist 'pending' and drop the write lock before the dispatch HTTP call.
+    await db.commit()
+
+    try:
+        sanitized = _sanitize_name(series_title, issue_number)
+        client_job_id = await dl_client.send_nzb(top.download_url, sanitized, dc_category)
+    except Exception:
+        logger.warning(
+            "process_job: %s dispatch failed for job %d", dc_type, job_id, exc_info=True
+        )
+        return
+
+    job.client_job_id = client_job_id
+    job.download_client_type = dc_type
+    job.status = "downloading"
+    issue.status = "downloading"
+    payload = webhooks.build_issue_payload(issue, series, library_root, job=job)
+    await db.commit()
+    webhooks.emit("download.started", payload)
+
+
+def _build_download_client(dc, job_id: int):
+    """Construct the client for a DownloadClient row, or None if unsupported."""
+    if dc.type == "nzbget":
+        return NZBGetClient(
+            host=dc.host,
+            port=dc.port,
+            username=dc.username or "nzbget",
+            password=dc.password or "",
+        )
+    if dc.type == "sabnzbd":
+        return SABnzbdClient(host=dc.host, port=dc.port, api_key=dc.api_key or "")
+    logger.warning(
+        "process_job: unsupported download client type %r; job %d left at 'pending'",
+        dc.type,
+        job_id,
+    )
+    return None
 
 
 async def run_job_now(job_id: int) -> None:

@@ -3,7 +3,10 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronLeft, ChevronRight, Download, RefreshCw } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { get, post } from '../../api/client'
+import { Cover } from '../../components/cover'
+import { Button } from '../../components/ui/button'
 import { Skeleton } from '../../components/ui/skeleton'
+import { statusColor } from '../../lib/status'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -112,19 +115,7 @@ function todayIso(): string {
 /** A failing download job is the one thing Issue.status cannot express, so it
  *  takes priority over the issue's own state when picking a colour. */
 function entryColor(entry: CalendarEntry): string {
-  if (entry.job_status === 'failed') return 'var(--color-status-failed)'
-  switch (entry.status) {
-    case 'downloaded':
-      return 'var(--color-status-downloaded)'
-    case 'downloading':
-      return 'var(--color-status-downloading)'
-    case 'wanted':
-      return 'var(--color-status-wanted)'
-    case 'skipped':
-      return 'var(--color-status-skipped)'
-    default:
-      return 'var(--color-muted)'
-  }
+  return statusColor(entry.job_status === 'failed' ? 'failed' : entry.status)
 }
 
 function entryLabel(entry: CalendarEntry): string {
@@ -166,24 +157,9 @@ function NavButton({
   title?: string
 }) {
   return (
-    <button
-      onClick={onClick}
-      title={title}
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: '6px',
-        padding: '6px 10px',
-        borderRadius: '6px',
-        background: 'var(--color-surface)',
-        border: '1px solid var(--color-border)',
-        color: 'var(--color-text)',
-        cursor: 'pointer',
-        fontSize: '0.8rem',
-      }}
-    >
+    <Button variant="outline" onClick={onClick} title={title}>
       {children}
-    </button>
+    </Button>
   )
 }
 
@@ -241,32 +217,19 @@ function DownloadButton({ issueId, compact }: { issueId: number; compact?: boole
     },
   })
   return (
-    <button
+    <Button
+      size="xs"
+      className={compact ? 'px-1.5 py-px' : undefined}
       onClick={(e) => {
         e.stopPropagation()
         mutation.mutate()
       }}
       disabled={mutation.isPending}
       title="Send to the download queue"
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: '5px',
-        fontSize: '0.72rem',
-        fontWeight: 600,
-        padding: compact ? '2px 6px' : '4px 10px',
-        borderRadius: '5px',
-        background: 'var(--color-accent)',
-        color: '#fff',
-        border: 'none',
-        cursor: mutation.isPending ? 'default' : 'pointer',
-        opacity: mutation.isPending ? 0.6 : 1,
-        whiteSpace: 'nowrap',
-      }}
     >
       <Download size={12} />
       {compact ? '' : mutation.isPending ? '…' : 'Download'}
-    </button>
+    </Button>
   )
 }
 
@@ -492,29 +455,7 @@ function AgendaView({
                   cursor: 'pointer',
                 }}
               >
-                {entry.cover_url ? (
-                  <img
-                    src={entry.cover_url}
-                    alt={entry.series_title}
-                    style={{
-                      width: 40,
-                      height: 56,
-                      objectFit: 'cover',
-                      borderRadius: '4px',
-                      flexShrink: 0,
-                    }}
-                  />
-                ) : (
-                  <div
-                    style={{
-                      width: 40,
-                      height: 56,
-                      borderRadius: '4px',
-                      background: 'var(--color-border)',
-                      flexShrink: 0,
-                    }}
-                  />
-                )}
+                <Cover url={entry.cover_url} alt={entry.series_title} width={40} />
 
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div

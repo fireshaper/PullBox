@@ -62,16 +62,52 @@ async def register_schedules(scheduler: AsyncScheduler, settings: Settings) -> N
         id="sync_subscribed_arcs",
         conflict_policy=ConflictPolicy.replace,
     )
+    await scheduler.add_schedule(
+        resolve_comicvine_links,
+        IntervalTrigger(minutes=settings.cv_link_interval_minutes),
+        id="resolve_comicvine_links",
+        conflict_policy=ConflictPolicy.replace,
+    )
     logger.info(
         "Scheduler schedules registered: daily_queue_sweep (%02d:%02d), "
         "poll_download_clients (every %d min), sync_imported_issues (every %d min), "
-        "sync_subscribed_arcs (every %d min)",
+        "sync_subscribed_arcs (every %d min), resolve_comicvine_links (every %d min)",
         retry_hour,
         retry_minute,
         settings.download_poll_interval_minutes,
         settings.import_sync_interval_minutes,
         settings.arc_sync_interval_minutes,
+        settings.cv_link_interval_minutes,
     )
+
+
+async def supervise_scheduler(scheduler: AsyncScheduler, settings: Settings) -> None:
+    """Restart the scheduler if it dies, and say so loudly when it does.
+
+    APScheduler 4 calls ``data_store.release_job`` outside any error handling, so a
+    single failed bookkeeping write — "database is locked" under SQLite contention —
+    propagates out of its task group and stops the scheduler for good. Nothing polls
+    downloads or sweeps the queue after that, and the only symptom is silence, which
+    is exactly how this went unnoticed. Watch for it and bring the scheduler back.
+    """
+    from apscheduler import RunState  # noqa: PLC0415
+
+    interval = max(30, settings.scheduler_watchdog_interval_seconds)
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            if scheduler.state is RunState.stopped:
+                logger.error(
+                    "Scheduler is stopped but PullBox is still running — restarting it. "
+                    "Downloads and queue retries do not run while it is down."
+                )
+                await scheduler.start_in_background()
+                await register_schedules(scheduler, settings)
+                logger.info("Scheduler restarted by the watchdog")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Scheduler watchdog failed to restart the scheduler")
 
 
 def now_utc() -> datetime:
@@ -101,7 +137,7 @@ async def daily_queue_sweep() -> None:
     import pullbox.database as db_module
     import pullbox.deps as deps_module
     from pullbox.models import DownloadJob  # noqa: PLC0415
-    from pullbox.services.queue import enqueue_orphaned_wanted, process_job  # noqa: PLC0415
+    from pullbox.services.queue import enqueue_unqueued_issues, process_job  # noqa: PLC0415
 
     if db_module.AsyncSessionLocal is None:
         logger.warning("daily_queue_sweep: database not initialized, skipping run")
@@ -112,7 +148,7 @@ async def daily_queue_sweep() -> None:
 
     async with db_module.AsyncSessionLocal() as db:
         try:
-            await enqueue_orphaned_wanted(db)
+            await enqueue_unqueued_issues(db)
             await db.commit()
         except Exception:
             logger.exception("daily_queue_sweep: error reconciling orphaned wanted issues")
@@ -167,6 +203,7 @@ async def nightly_calendar_refresh() -> dict:
     from pullbox.clients.metadata import PROVIDER_ERRORS, ids_for  # noqa: PLC0415
     from pullbox.models import Issue, Series, WeeklyRelease  # noqa: PLC0415
     from pullbox.services.dedupe import (  # noqa: PLC0415
+        adopt_provider_ids,
         find_issue_for_release,
         find_series_for_release,
     )
@@ -261,6 +298,7 @@ async def nightly_calendar_refresh() -> dict:
                                     and volume.get("start_year") is not None
                                 ):
                                     series.start_year = volume["start_year"]
+                                await adopt_provider_ids(db, series, volume)
 
                         issue_ids = ids_for(release_data)
 
@@ -434,7 +472,9 @@ async def poll_download_clients() -> None:
         DownloadJob,
         Issue,
         PostProcessingSettings,
+        Series,
     )
+    from pullbox.services import webhooks  # noqa: PLC0415
     from pullbox.services.general import resolve_library_path  # noqa: PLC0415
 
     if db_module.AsyncSessionLocal is None:
@@ -550,6 +590,7 @@ async def poll_download_clients() -> None:
             status,
         )
 
+        client_job_missing = status == "missing"
         if status == "missing":
             # The client has no record of this job. Give a freshly-dispatched NZB
             # time to surface first; only past the grace period is it really gone.
@@ -589,6 +630,7 @@ async def poll_download_clients() -> None:
             if job_obj is None:
                 continue
             issue = await db.get(Issue, job_obj.issue_id)
+            series = await db.get(Series, issue.series_id)
             now = datetime.now(tz=timezone.utc)
 
             if status == "completed":
@@ -604,6 +646,8 @@ async def poll_download_clients() -> None:
                     issue.issue_number,
                     job_id,
                 )
+                event = "download.completed"
+                reason = None
             else:
                 job_obj.status = "failed"
                 issue.status = "wanted"
@@ -616,8 +660,20 @@ async def poll_download_clients() -> None:
                     job_id,
                     days,
                 )
+                event = "download.failed"
+                reason = (
+                    f"{client_type} has no record of the download"
+                    if client_job_missing
+                    else f"{client_type} reported the download as failed"
+                )
 
+            # Snapshot the notification while the rows are attached; it is only
+            # sent once the transaction below has committed.
+            payload = webhooks.build_issue_payload(
+                issue, series, library_root, job=job_obj, reason=reason
+            )
             await db.commit()
+            webhooks.emit(event, payload)
 
 
 async def sync_imported_issues() -> None:
@@ -819,3 +875,44 @@ async def sync_subscribed_arcs() -> None:
         len(enqueued),
     )
     await _record(True, f"{len(arc_ids)} arc(s) checked, {added} issue(s) added")
+
+
+async def resolve_comicvine_links() -> None:
+    """Recover ComicVine volume ids for series Metron gives no ``cv_id`` for.
+
+    Metron leaves ``cv_id`` null on a large share of series, so those rows can
+    never link out to ComicVine no matter how often they refresh. This drains
+    that backlog a budget at a time (see services/cv_link.py for the matching
+    rules); once a series is resolved or conclusively attempted it drops out of
+    the candidate set, so a settled library costs nothing per run.
+    """
+    import pullbox.database as db_module  # noqa: PLC0415
+    import pullbox.deps as deps_module  # noqa: PLC0415
+    from pullbox.services.cv_link import resolve_series_cv_ids  # noqa: PLC0415
+
+    if db_module.AsyncSessionLocal is None:
+        logger.warning("resolve_comicvine_links: database not initialized, skipping run")
+        return
+
+    settings = deps_module.get_settings()
+    if not settings.comicvine_api_key:
+        return  # the ids being recovered are ComicVine's; no key, nothing to ask
+
+    provider = deps_module.build_metadata_provider(settings)
+    try:
+        stats = await resolve_series_cv_ids(
+            db_module.AsyncSessionLocal,
+            provider.comicvine_source,
+            limit=settings.cv_link_budget,
+        )
+    finally:
+        await provider.close()
+
+    if stats["checked"]:
+        logger.info(
+            "resolve_comicvine_links: %d/%d series linked (%d candidate(s) remaining "
+            "in this batch)",
+            stats["resolved"],
+            stats["checked"],
+            stats["candidates"],
+        )
