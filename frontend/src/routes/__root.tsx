@@ -1,3 +1,4 @@
+import { useQuery } from '@tanstack/react-query'
 import { createRootRoute, Link, Outlet } from '@tanstack/react-router'
 import {
   BookOpen,
@@ -8,6 +9,8 @@ import {
   LayoutDashboard,
   Settings,
 } from 'lucide-react'
+
+import { get } from '../api/client'
 
 export const Route = createRootRoute({
   component: AppLayout,
@@ -23,7 +26,19 @@ const NAV_ITEMS = [
   { to: '/settings', label: 'Settings', icon: Settings },
 ] as const
 
+// The version is set in one place — backend/pyproject.toml — and served by
+// /api/health, so the footer shows what the running server actually is.
+function useServerVersion() {
+  const { data } = useQuery({
+    queryKey: ['health'],
+    queryFn: () => get<{ version: string }>('/health'),
+    staleTime: Infinity,
+  })
+  return data?.version
+}
+
 function AppLayout() {
+  const version = useServerVersion()
   return (
     <div className="flex h-screen overflow-hidden">
       <aside
@@ -76,7 +91,7 @@ function AppLayout() {
             color: 'var(--color-muted)',
           }}
         >
-          <span className="text-xs">v0.2.0</span>
+          {version && <span className="text-xs">v{version}</span>}
         </div>
       </aside>
 

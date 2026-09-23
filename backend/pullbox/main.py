@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 import pullbox.database as database
 import pullbox.deps as deps
 from pullbox.config import Settings
+from pullbox.version import __version__
 
 logger = logging.getLogger(__name__)
 
@@ -114,12 +115,12 @@ async def lifespan(app: FastAPI):
         await database._engine.dispose()
 
 
-app = FastAPI(title="PullBox", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="PullBox", version=__version__, lifespan=lifespan)
 
 
 @app.get("/api/health")
 async def health(settings: SettingsDep):
-    return {"status": "ok", "debug": settings.debug}
+    return {"status": "ok", "debug": settings.debug, "version": __version__}
 
 
 # Routers — included after app is created to avoid circular imports
