@@ -114,7 +114,7 @@ async def lifespan(app: FastAPI):
         await database._engine.dispose()
 
 
-app = FastAPI(title="PullBox", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="PullBox", version="0.2.0", lifespan=lifespan)
 
 
 @app.get("/api/health")

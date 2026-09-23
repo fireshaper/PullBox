@@ -58,7 +58,7 @@ EVENTS: dict[str, str] = {
 
 FORMATS: tuple[str, ...] = ("generic", "discord")
 
-USER_AGENT = "PullBox/0.1.0 (+https://github.com/fireshaper/pullbox)"
+USER_AGENT = "PullBox/0.2.0 (+https://github.com/fireshaper/pullbox)"
 
 # One delivery: a short timeout and a couple of quick retries. Anything longer
 # would let a hung endpoint pin a task for minutes; the user sees the failure

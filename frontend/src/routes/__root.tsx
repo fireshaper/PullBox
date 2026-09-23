@@ -76,7 +76,7 @@ function AppLayout() {
             color: 'var(--color-muted)',
           }}
         >
-          <span className="text-xs">v0.1.0</span>
+          <span className="text-xs">v0.2.0</span>
         </div>
       </aside>
 
